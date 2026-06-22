@@ -482,9 +482,12 @@ func (a *App) closeDialog() {
 	}
 	a.focusBeforeDialog = nil
 
-	a.app.SetFocus(target)
 	a.pages.RemovePage("dialog")
 	a.dialogOpen = false
+
+	a.app.QueueUpdateDraw(func() {
+		a.app.SetFocus(target)
+	})
 }
 
 // getFocusTarget returns the appropriate visible focus target (sidebar or query panel fallback)
