@@ -665,11 +665,13 @@ func (d *Dialogs) ShowSearchExplorerDialog(sidebar *Sidebar) {
 		SetText(query).
 		SetFieldWidth(40)
 
-	input.SetDoneFunc(func(key tcell.Key) {
-		if key == tcell.KeyEnter {
+	input.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEnter {
 			d.app.closeDialog()
 			sidebar.filterTables(input.GetText())
+			return nil
 		}
+		return event
 	})
 
 	form.AddFormItem(input)

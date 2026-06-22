@@ -355,7 +355,9 @@ func (s *Sidebar) RebuildTree() {
 	}
 
 	if wasFocused || s.forceFocusTree {
-		s.app.app.SetFocus(s.treeView)
+		if !s.app.dialogOpen {
+			s.app.app.SetFocus(s.treeView)
+		}
 		s.forceFocusTree = false
 	}
 }

@@ -15,6 +15,14 @@ import (
 	"github.com/rivo/tview"
 )
 
+func debugLog(msg string) {
+	f, err := os.OpenFile("/home/mawa/My_File/Development/dev_ink/dbTui/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		defer f.Close()
+		f.WriteString(time.Now().Format("15:04:05 ") + msg + "\n")
+	}
+}
+
 // App is the main application orchestrator
 type App struct {
 	app               *tview.Application
@@ -447,8 +455,10 @@ func (a *App) showDialog(primitive tview.Primitive) {
 	if !a.dialogOpen {
 		if currentFocus := a.app.GetFocus(); currentFocus != nil {
 			a.focusBeforeDialog = currentFocus
+			debugLog(fmt.Sprintf("showDialog: saved focusBeforeDialog = %T", currentFocus))
 		} else {
 			a.focusBeforeDialog = nil
+			debugLog("showDialog: focusBeforeDialog = nil")
 		}
 	}
 
@@ -477,17 +487,24 @@ func (a *App) showDialog(primitive tview.Primitive) {
 // closeDialog closes the current dialog
 func (a *App) closeDialog() {
 	target := a.getFocusTarget()
+	wasSaved := a.focusBeforeDialog != nil
+	debugLog(fmt.Sprintf("closeDialog: focusBeforeDialog exists = %v (%T), isFocusable = %v", wasSaved, a.focusBeforeDialog, a.isFocusable(a.focusBeforeDialog)))
 	if a.isFocusable(a.focusBeforeDialog) {
 		target = a.focusBeforeDialog
 	}
 	a.focusBeforeDialog = nil
 
-	a.pages.RemovePage("dialog")
-	a.dialogOpen = false
-
-	a.app.QueueUpdateDraw(func() {
-		a.app.SetFocus(target)
-	})
+	debugLog(fmt.Sprintf("closeDialog: target resolved to = %T", target))
+	go func() {
+		a.app.QueueUpdateDraw(func() {
+			debugLog("closeDialog QueueUpdateDraw: removing dialog page")
+			a.pages.RemovePage("dialog")
+			a.dialogOpen = false
+			debugLog(fmt.Sprintf("closeDialog QueueUpdateDraw: calling SetFocus on %T", target))
+			a.app.SetFocus(target)
+			debugLog(fmt.Sprintf("closeDialog QueueUpdateDraw: current focus after SetFocus = %T", a.app.GetFocus()))
+		})
+	}()
 }
 
 // getFocusTarget returns the appropriate visible focus target (sidebar or query panel fallback)
