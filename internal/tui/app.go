@@ -36,6 +36,7 @@ type App struct {
 	historyIndex      int
 	lastSelectedTable string
 	lastSelectedDB    string
+	focusBeforeDialog tview.Primitive // tracks the primitive focused before opening a dialog
 }
 
 // NewApp creates a new TUI application
@@ -422,8 +423,35 @@ func (a *App) FocusResultTable() {
 	a.app.SetFocus(a.resultTable)
 }
 
+// isFocusable returns whether the primitive is safe to focus (not nil and not hidden)
+func (a *App) isFocusable(p tview.Primitive) bool {
+	if p == nil {
+		return false
+	}
+	if a.sidebarHidden {
+		if p == a.sidebar.GetTreeView() || p == a.sidebar {
+			return false
+		}
+	}
+	if a.editorHidden {
+		if p == a.queryPanel || (a.queryPanel != nil && p == a.queryPanel.TextArea) {
+			return false
+		}
+	}
+	return true
+}
+
 // ShowDialog shows a modal dialog
 func (a *App) showDialog(primitive tview.Primitive) {
+	// Remember the currently focused primitive before showing the dialog
+	if !a.dialogOpen {
+		if currentFocus := a.app.GetFocus(); currentFocus != nil {
+			a.focusBeforeDialog = currentFocus
+		} else {
+			a.focusBeforeDialog = nil
+		}
+	}
+
 	flex := tview.NewFlex().
 		AddItem(nil, 0, 1, false).
 		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
@@ -448,15 +476,15 @@ func (a *App) showDialog(primitive tview.Primitive) {
 
 // closeDialog closes the current dialog
 func (a *App) closeDialog() {
+	target := a.getFocusTarget()
+	if a.isFocusable(a.focusBeforeDialog) {
+		target = a.focusBeforeDialog
+	}
+	a.focusBeforeDialog = nil
+
+	a.app.SetFocus(target)
 	a.pages.RemovePage("dialog")
 	a.dialogOpen = false
-	// Focus appropriate visible component after a short delay so the event loop finishes and redraws
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		a.app.QueueUpdateDraw(func() {
-			a.app.SetFocus(a.getFocusTarget())
-		})
-	}()
 }
 
 // getFocusTarget returns the appropriate visible focus target (sidebar or query panel fallback)

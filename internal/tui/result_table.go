@@ -59,6 +59,12 @@ func NewResultTable(app *App) *ResultTable {
 		case tcell.KeyCtrlE:
 			app.ExportResults()
 			return nil
+		case tcell.KeyEnter:
+			row, col := rt.Table.GetSelection()
+			if rt.result != nil && row > 0 && row <= len(rt.result.Rows) && col >= 0 && col < len(rt.result.Columns) {
+				rt.InspectCell(row, col)
+				return nil
+			}
 		case tcell.KeyRune:
 			switch event.Rune() {
 			case '/':
@@ -477,4 +483,17 @@ func (rt *ResultTable) EditCell(row, col int) {
 			})
 		})
 	}()
+}
+
+// InspectCell shows a modal dialog with the full content of the selected cell
+func (rt *ResultTable) InspectCell(row, col int) {
+	result := rt.result
+	if result == nil || row <= 0 || row > len(result.Rows) || col < 0 || col >= len(result.Columns) {
+		return
+	}
+
+	colName := result.Columns[col]
+	cellValue := result.Rows[row-1][col]
+
+	rt.app.dialogs.ShowCellInspectDialog(result.Table, colName, cellValue)
 }

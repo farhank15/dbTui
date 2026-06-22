@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -892,4 +893,190 @@ func (d *Dialogs) ShowCellEditDialog(dbName, tableName, colName, currentVal, whe
 	})
 
 	d.app.showDialog(form)
+}
+
+// ShowCellInspectDialog shows a scrollable modal dialog with the full value of a cell
+func (d *Dialogs) ShowCellInspectDialog(tableName, colName, cellValue string) {
+	title := fmt.Sprintf(" View Value: %s.%s ", tableName, colName)
+	if tableName == "" {
+		title = fmt.Sprintf(" View Value: %s ", colName)
+	}
+
+	// Check if cellValue is valid JSON, and pretty-print it
+	var jsonObject interface{}
+	isJSON := false
+	if err := json.Unmarshal([]byte(cellValue), &jsonObject); err == nil {
+		formatted, err2 := json.MarshalIndent(jsonObject, "", "  ")
+		if err2 == nil {
+			cellValue = string(formatted)
+			isJSON = true
+		}
+	}
+
+	displayValue := cellValue
+	if isJSON {
+		displayValue = colorizeJSON(cellValue)
+	} else {
+		// Escape standard tview tags in non-JSON text to prevent formatting corruption
+		displayValue = strings.ReplaceAll(cellValue, "[", "[[")
+	}
+
+	textView := tview.NewTextView().
+		SetDynamicColors(true).
+		SetRegions(true).
+		SetWordWrap(true).
+		SetText(displayValue)
+	textView.SetBorder(true).SetTitle(title).SetTitleAlign(tview.AlignLeft)
+
+	form := tview.NewForm()
+	form.AddButton("Copy to Clipboard", func() {
+		if err := writeToClipboard(cellValue); err != nil {
+			d.app.statusBar.ShowError(fmt.Sprintf("Failed to copy: %v", err))
+		} else {
+			d.app.statusBar.ShowSuccess("Copied value to clipboard!")
+		}
+	})
+	form.AddButton("Close", func() {
+		d.app.closeDialog()
+	})
+
+	flex := tview.NewFlex().
+		SetDirection(tview.FlexRow).
+		AddItem(textView, 0, 1, true).
+		AddItem(form, 5, 0, false)
+
+	d.app.showDialog(flex)
+}
+
+func colorizeJSON(jsonStr string) string {
+	var sb strings.Builder
+	inString := false
+	isKey := false
+	escaped := false
+
+	runes := []rune(jsonStr)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if escaped {
+			if r == '[' {
+				sb.WriteString("[[")
+			} else {
+				sb.WriteRune(r)
+			}
+			escaped = false
+			continue
+		}
+
+		if r == '\\' {
+			sb.WriteRune(r)
+			escaped = true
+			continue
+		}
+
+		if r == '"' {
+			inString = !inString
+			if inString {
+				isKey = checkIsKey(runes, i)
+				if isKey {
+					sb.WriteString("[lightblue]\"")
+				} else {
+					sb.WriteString("[green]\"")
+				}
+			} else {
+				sb.WriteString("\"[-]")
+			}
+			continue
+		}
+
+		if inString {
+			if r == '[' {
+				sb.WriteString("[[")
+			} else {
+				sb.WriteRune(r)
+			}
+			continue
+		}
+
+		switch r {
+		case '{', '}', '[', ']', ':', ',':
+			var charStr string
+			if r == '[' {
+				charStr = "[["
+			} else {
+				charStr = string(r)
+			}
+			sb.WriteString(fmt.Sprintf("[white]%s[-]", charStr))
+		case 't', 'f', 'n': // true, false, null
+			word := ""
+			for j := i; j < len(runes) && runes[j] >= 'a' && runes[j] <= 'z'; j++ {
+				word += string(runes[j])
+			}
+			if word == "true" || word == "false" {
+				sb.WriteString(fmt.Sprintf("[purple]%s[-]", word))
+				i += len(word) - 1
+			} else if word == "null" {
+				sb.WriteString(fmt.Sprintf("[red]%s[-]", word))
+				i += len(word) - 1
+			} else {
+				sb.WriteRune(r)
+			}
+		default:
+			if (r >= '0' && r <= '9') || r == '-' || r == '.' {
+				word := ""
+				for j := i; j < len(runes) && ((runes[j] >= '0' && runes[j] <= '9') || runes[j] == '-' || runes[j] == '.' || runes[j] == 'e' || runes[j] == 'E' || runes[j] == '+'); j++ {
+					word += string(runes[j])
+				}
+				if len(word) > 0 {
+					sb.WriteString(fmt.Sprintf("[yellow]%s[-]", word))
+					i += len(word) - 1
+				} else {
+					if r == '[' {
+						sb.WriteString("[[")
+					} else {
+						sb.WriteRune(r)
+					}
+				}
+			} else {
+				if r == '[' {
+					sb.WriteString("[[")
+				} else {
+					sb.WriteRune(r)
+				}
+			}
+		}
+	}
+	return sb.String()
+}
+
+func checkIsKey(runes []rune, startIdx int) bool {
+	escaped := false
+	endIdx := -1
+	for j := startIdx + 1; j < len(runes); j++ {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if runes[j] == '\\' {
+			escaped = true
+			continue
+		}
+		if runes[j] == '"' {
+			endIdx = j
+			break
+		}
+	}
+	if endIdx == -1 {
+		return false
+	}
+	for j := endIdx + 1; j < len(runes); j++ {
+		r := runes[j]
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			continue
+		}
+		if r == ':' {
+			return true
+		}
+		break
+	}
+	return false
 }

@@ -102,6 +102,7 @@ go build -o dbTui ./cmd/dbTui
 | Shortcut | Function |
 | :--- | :--- |
 | `↑` / `↓` / `←` / `→` | Scroll through query results |
+| `Enter` | **Inspect/View full cell value in a scrollable modal** |
 | `e` / `E` | **Edit selected cell value inline (performs database UPDATE)** |
 | `Ctrl + E` | Export active query results to CSV |
 | `/` | Filter columns by name (when viewing table detail metadata) |
