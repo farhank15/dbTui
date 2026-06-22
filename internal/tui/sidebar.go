@@ -16,12 +16,15 @@ import (
 // Sidebar displays the connection tree and schema browser
 type Sidebar struct {
 	*tview.Flex
-	treeView       *tview.TreeView
-	root           *tview.TreeNode
-	app            *App
-	searchQuery    string
-	cachedTables   map[string][]model.TableInfo
-	forceFocusTree bool
+	treeView           *tview.TreeView
+	root               *tview.TreeNode
+	app                *App
+	searchQuery        string
+	cachedTables       map[string][]model.TableInfo
+	forceFocusTree     bool
+	savedExpandedDBs   map[string]bool
+	savedExpandedConns map[string]bool
+	searchActive       bool
 }
 
 // NewSidebar creates a new sidebar with search support
@@ -175,6 +178,30 @@ func (s *Sidebar) RebuildTree() {
 					}
 				}
 			}
+		}
+	}
+
+	// Handle search transition state to restore correct expanded states when search is cleared
+	searchQueryLower := strings.ToLower(strings.TrimSpace(s.searchQuery))
+	if searchQueryLower != "" {
+		if !s.searchActive {
+			s.searchActive = true
+			s.savedExpandedConns = make(map[string]bool)
+			for k, v := range expandedConns {
+				s.savedExpandedConns[k] = v
+			}
+			s.savedExpandedDBs = make(map[string]bool)
+			for k, v := range expandedDBs {
+				s.savedExpandedDBs[k] = v
+			}
+		}
+	} else {
+		if s.searchActive {
+			s.searchActive = false
+			expandedConns = s.savedExpandedConns
+			expandedDBs = s.savedExpandedDBs
+			s.savedExpandedConns = nil
+			s.savedExpandedDBs = nil
 		}
 	}
 
@@ -443,6 +470,12 @@ func (s *Sidebar) onInput(event *tcell.EventKey) *tcell.EventKey {
 		case '/':
 			s.ShowSearchExplorerDialog()
 			return nil
+		case '-':
+			s.CollapseAll()
+			return nil
+		case '+', '=':
+			s.ExpandAll()
+			return nil
 		case 'c', 'C':
 			s.app.ShowConnectionDialog(nil)
 			return nil
@@ -667,4 +700,26 @@ func writeOSC52(text string) error {
 	osc := fmt.Sprintf("\x1b]52;c;%s\x07", b64)
 	_, err := os.Stdout.Write([]byte(osc))
 	return err
+}
+
+// CollapseAll collapses all connection and database nodes in the tree
+func (s *Sidebar) CollapseAll() {
+	for _, connNode := range s.root.GetChildren() {
+		connNode.SetExpanded(false)
+		for _, dbNode := range connNode.GetChildren() {
+			dbNode.SetExpanded(false)
+		}
+	}
+	s.app.statusBar.ShowInfo("Collapsed all explorer nodes")
+}
+
+// ExpandAll expands all connection and database nodes in the tree
+func (s *Sidebar) ExpandAll() {
+	for _, connNode := range s.root.GetChildren() {
+		connNode.SetExpanded(true)
+		for _, dbNode := range connNode.GetChildren() {
+			dbNode.SetExpanded(true)
+		}
+	}
+	s.app.statusBar.ShowInfo("Expanded all explorer nodes")
 }
