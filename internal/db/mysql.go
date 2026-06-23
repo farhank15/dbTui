@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -14,6 +15,7 @@ import (
 
 // MySQLConnector implements Connector for MySQL
 type MySQLConnector struct {
+	mu  sync.Mutex
 	db  *sql.DB
 	cfg model.Connection
 }
@@ -44,7 +46,43 @@ func (m *MySQLConnector) Connect(config model.Connection) error {
 	return nil
 }
 
+func (m *MySQLConnector) useDB(dbName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if dbName == "" {
+		return nil
+	}
+	if m.cfg.Database == dbName {
+		return nil
+	}
+
+	// Close old connection
+	if m.db != nil {
+		m.db.Close()
+	}
+
+	// Update config database name
+	m.cfg.Database = dbName
+
+	// Re-establish connection to the new database
+	dsn := m.cfg.DSN()
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return err
+	}
+
+	db.SetMaxOpenConns(5)
+	db.SetMaxIdleConns(2)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	m.db = db
+	return nil
+}
+
 func (m *MySQLConnector) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.db != nil {
 		return m.db.Close()
 	}
@@ -52,6 +90,8 @@ func (m *MySQLConnector) Close() error {
 }
 
 func (m *MySQLConnector) Ping() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.db == nil {
 		return fmt.Errorf("not connected")
 	}
@@ -59,6 +99,8 @@ func (m *MySQLConnector) Ping() error {
 }
 
 func (m *MySQLConnector) IsConnected() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.db != nil && m.db.Ping() == nil
 }
 
@@ -67,6 +109,9 @@ func (m *MySQLConnector) GetDB() *sql.DB {
 }
 
 func (m *MySQLConnector) GetDatabases() ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -91,6 +136,9 @@ func (m *MySQLConnector) GetDatabases() ([]string, error) {
 }
 
 func (m *MySQLConnector) GetTables(dbName string) ([]model.TableInfo, error) {
+	if err := m.useDB(dbName); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	rows, err := m.db.QueryContext(ctx, "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME", dbName)
@@ -111,6 +159,9 @@ func (m *MySQLConnector) GetTables(dbName string) ([]model.TableInfo, error) {
 }
 
 func (m *MySQLConnector) GetColumns(dbName, tableName string) ([]model.ColumnInfo, error) {
+	if err := m.useDB(dbName); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -140,6 +191,9 @@ func (m *MySQLConnector) GetColumns(dbName, tableName string) ([]model.ColumnInf
 }
 
 func (m *MySQLConnector) GetIndexes(dbName, tableName string) ([]model.IndexInfo, error) {
+	if err := m.useDB(dbName); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -231,6 +285,9 @@ func (m *MySQLConnector) getIndexesSimple(dbName, tableName string) ([]model.Ind
 
 
 func (m *MySQLConnector) GetForeignKeys(dbName, tableName string) ([]model.ForeignKeyInfo, error) {
+	if err := m.useDB(dbName); err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -289,6 +346,9 @@ func (m *MySQLConnector) GetTableDetail(dbName, tableName string) (*model.TableD
 }
 
 func (m *MySQLConnector) ExecuteQuery(query string) (*model.QueryResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	start := time.Now()
 	trimmed := strings.TrimSpace(strings.ToUpper(query))
 	isSelect := strings.HasPrefix(trimmed, "SELECT") ||
@@ -394,7 +454,7 @@ func (m *MySQLConnector) executeExec(query string, start time.Time) (*model.Quer
 }
 
 func (m *MySQLConnector) ExecuteQueryWithDB(dbName, query string) (*model.QueryResult, error) {
-	if _, err := m.db.ExecContext(context.Background(), fmt.Sprintf("USE %s", quoteIdent(dbName))); err != nil {
+	if err := m.useDB(dbName); err != nil {
 		return nil, err
 	}
 	return m.ExecuteQuery(query)
@@ -532,6 +592,9 @@ func (m *MySQLConnector) ModifyColumn(dbName, tableName string, oldName string, 
 }
 
 func (m *MySQLConnector) GetRowCount(dbName, tableName string) (int64, error) {
+	if err := m.useDB(dbName); err != nil {
+		return 0, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var count int64

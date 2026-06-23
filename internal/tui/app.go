@@ -141,7 +141,9 @@ func (a *App) globalInputHandler(event *tcell.EventKey) *tcell.EventKey {
 		a.app.SetFocus(a.getFocusTarget())
 		return nil
 	case tcell.KeyF5:
-		a.sidebar.RefreshConnections()
+		// F5 from anywhere refreshes both sidebar tree AND active query
+		a.sidebar.ForceRefresh()
+		a.RefreshActiveQuery()
 		return nil
 	case tcell.KeyCtrlB:
 		a.ToggleSidebar()
@@ -323,12 +325,20 @@ func (a *App) QueryTable(connID, dbName, tableName string) {
 	var quotedTable string
 	switch connConfig.Type {
 	case model.TypeMySQL:
-		quotedTable = fmt.Sprintf("`%s`", tableName)
+		parts := strings.Split(tableName, ".")
+		for i, part := range parts {
+			parts[i] = fmt.Sprintf("`%s`", part)
+		}
+		quotedTable = strings.Join(parts, ".")
 	default:
-		quotedTable = fmt.Sprintf("\"%s\"", tableName)
+		parts := strings.Split(tableName, ".")
+		for i, part := range parts {
+			parts[i] = fmt.Sprintf("\"%s\"", part)
+		}
+		quotedTable = strings.Join(parts, ".")
 	}
 
-	query := fmt.Sprintf("SELECT * FROM %s LIMIT 100", quotedTable)
+	query := fmt.Sprintf("SELECT * FROM %s", quotedTable)
 	a.queryPanel.SetQueryText(query)
 
 	connector, err := a.dbManager.GetConnector(connID)
@@ -776,4 +786,23 @@ func ReconstructDDL(detail *model.TableDetail, dbType model.ConnectionType) stri
 	}
 
 	return sb.String()
+}
+
+// RefreshActiveQuery re-runs the current query or reloads the active table data in the results view
+func (a *App) RefreshActiveQuery() {
+	if a.resultTable.result == nil {
+		a.statusBar.ShowError("No active query or table to refresh")
+		return
+	}
+
+	res := a.resultTable.result
+	if res.Table != "" && res.Database != "" && res.ConnID != "" {
+		// It's a table view, reload it!
+		a.statusBar.ShowInfo("Refreshing table data...")
+		a.QueryTable(res.ConnID, res.Database, res.Table)
+	} else {
+		// It's a custom SQL query, execute it again!
+		a.statusBar.ShowInfo("Refreshing SQL query...")
+		a.ExecuteQuery()
+	}
 }

@@ -3,7 +3,7 @@ package model
 import "fmt"
 
 // MaxDisplayRows is the maximum number of rows to display in the result table
-const MaxDisplayRows = 1000
+const MaxDisplayRows = 50000
 
 // QueryResult represents the result of a SQL query
 type QueryResult struct {

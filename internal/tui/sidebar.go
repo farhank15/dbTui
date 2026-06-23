@@ -268,8 +268,18 @@ func (s *Sidebar) RebuildTree() {
 					cacheKey := conn.ID + "_" + dbName
 					tables, isCached := s.cachedTables[cacheKey]
 
-					// Auto-load tables in background if filtering and not cached yet
-					if !isCached && queryLower != "" {
+					// Expanded state logic:
+					// If we are filtering, auto-expand database node
+					expanded := false
+					if queryLower != "" {
+						expanded = true
+					} else if val, exists := expandedDBs[conn.ID+"_"+dbName]; exists {
+						expanded = val
+					}
+					dbNode.SetExpanded(expanded)
+
+					// Auto-load tables in background if filtering or database is expanded, and not cached yet
+					if !isCached && (queryLower != "" || expanded) {
 						if s.cachedTables == nil {
 							s.cachedTables = make(map[string][]model.TableInfo)
 						}
@@ -306,16 +316,6 @@ func (s *Sidebar) RebuildTree() {
 					if tempMatchedTable != nil {
 						matchedTableNode = tempMatchedTable
 					}
-
-					// Expanded state logic:
-					// If we are filtering, auto-expand database node
-					expanded := false
-					if queryLower != "" {
-						expanded = true
-					} else if val, exists := expandedDBs[conn.ID+"_"+dbName]; exists {
-						expanded = val
-					}
-					dbNode.SetExpanded(expanded)
 
 					dbNodesToAdd = append(dbNodesToAdd, dbNode)
 
@@ -480,7 +480,7 @@ func (s *Sidebar) onInput(event *tcell.EventKey) *tcell.EventKey {
 			s.app.ShowConnectionDialog(nil)
 			return nil
 		case 'r', 'R':
-			s.RefreshConnections()
+			s.ForceRefresh()
 			return nil
 		case 'd', 'D':
 			node := s.GetCurrentNode()
@@ -722,4 +722,52 @@ func (s *Sidebar) ExpandAll() {
 		}
 	}
 	s.app.statusBar.ShowInfo("Expanded all explorer nodes")
+}
+
+// ForceRefresh reloads all databases and tables from the database servers
+// and rebuilds the explorer tree.
+func (s *Sidebar) ForceRefresh() {
+	s.app.statusBar.ShowInfo("Refreshing databases and tables...")
+
+	// Clear the cached tables so they are re-queried from the DB
+	s.cachedTables = make(map[string][]model.TableInfo)
+
+	// Fetch active connections and refresh their databases
+	activeConns := s.app.dbManager.GetActiveConnections()
+	if len(activeConns) == 0 {
+		s.RebuildTree()
+		s.app.statusBar.ShowSuccess("Explorer refreshed")
+		return
+	}
+
+	go func() {
+		for _, connState := range activeConns {
+			if connState.Connected {
+				_ = s.app.dbManager.RefreshDatabases(connState.Connection.ID)
+			}
+		}
+		s.app.app.QueueUpdateDraw(func() {
+			s.RebuildTree()
+
+			// Auto-load tables for all databases in the background
+			// so the user doesn't see an empty tree after refresh
+			for _, connState := range activeConns {
+				if !connState.Connected {
+					continue
+				}
+				curState := s.app.dbManager.GetConnectionState(connState.Connection.ID)
+				if curState != nil {
+					for _, dbName := range curState.Databases {
+						cacheKey := connState.Connection.ID + "_" + dbName
+						if _, isCached := s.cachedTables[cacheKey]; !isCached {
+							s.cachedTables[cacheKey] = []model.TableInfo{} // Mark as loading
+							go s.ExpandDatabase(connState.Connection.ID, dbName)
+						}
+					}
+				}
+			}
+
+			s.app.statusBar.ShowSuccess("Explorer refreshed successfully!")
+		})
+	}()
 }

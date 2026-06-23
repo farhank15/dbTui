@@ -321,17 +321,16 @@ func (d *Dialogs) ShowSearchDataDialog(ref *sidebarRef) {
 			}
 		}
 
-		var quotedTable, quotedColumn string
+		var quotedColumn string
+		quotedTable := d.quoteTableNameWithConn(ref.id, ref.table)
 		connConfig := d.app.config.GetConnectionByID(ref.id)
 		if connConfig != nil && connConfig.Type == model.TypeMySQL {
-			quotedTable = fmt.Sprintf("`%s`", ref.table)
 			quotedColumn = fmt.Sprintf("`%s`", columnName)
 		} else {
-			quotedTable = fmt.Sprintf("\"%s\"", ref.table)
 			quotedColumn = fmt.Sprintf("\"%s\"", columnName)
 		}
 
-		query := fmt.Sprintf("SELECT * FROM %s WHERE %s LIKE '%%%s%%' LIMIT 100;",
+		query := fmt.Sprintf("SELECT * FROM %s WHERE %s LIKE '%%%s%%';",
 			quotedTable, quotedColumn, escapedVal)
 
 		d.app.queryPanel.SetQueryText(query)
@@ -358,7 +357,8 @@ func (d *Dialogs) ShowTableContextMenu(connID, dbName, tableName string) {
 
 			switch buttonIndex {
 			case 0: // Select
-				d.app.queryPanel.SetQueryText(fmt.Sprintf("SELECT * FROM %s LIMIT 100;", tableName))
+				quotedTable := d.quoteTableNameWithConn(connID, tableName)
+				d.app.queryPanel.SetQueryText(fmt.Sprintf("SELECT * FROM %s;", quotedTable))
 				d.app.ExecuteQuery()
 			case 1: // Search Data
 				d.ShowSearchDataDialog(&sidebarRef{
@@ -591,13 +591,8 @@ func (d *Dialogs) ShowSearchRowsDialog() {
 					}
 				}
 
+				quotedTable := d.quoteTableNameWithConn(d.app.activeConn, tableName)
 				connConfig := d.app.config.GetConnectionByID(d.app.activeConn)
-				var quotedTable string
-				if connConfig != nil && connConfig.Type == model.TypeMySQL {
-					quotedTable = fmt.Sprintf("`%s`", tableName)
-				} else {
-					quotedTable = fmt.Sprintf("\"%s\"", tableName)
-				}
 
 				var sqlQuery string
 				if columnName != "" {
@@ -607,7 +602,7 @@ func (d *Dialogs) ShowSearchRowsDialog() {
 					} else {
 						quotedColumn = fmt.Sprintf("\"%s\"", columnName)
 					}
-					sqlQuery = fmt.Sprintf("SELECT * FROM %s WHERE %s LIKE '%%%s%%' LIMIT 100;", quotedTable, quotedColumn, escapedVal)
+					sqlQuery = fmt.Sprintf("SELECT * FROM %s WHERE %s LIKE '%%%s%%';", quotedTable, quotedColumn, escapedVal)
 				} else {
 					// Search all columns
 					var clauses []string
@@ -621,7 +616,7 @@ func (d *Dialogs) ShowSearchRowsDialog() {
 						clauses = append(clauses, fmt.Sprintf("%s LIKE '%%%s%%'", quotedCol, escapedVal))
 					}
 					if len(clauses) > 0 {
-						sqlQuery = fmt.Sprintf("SELECT * FROM %s WHERE %s LIMIT 100;", quotedTable, strings.Join(clauses, " OR "))
+						sqlQuery = fmt.Sprintf("SELECT * FROM %s WHERE %s;", quotedTable, strings.Join(clauses, " OR "))
 					}
 				}
 
@@ -703,6 +698,22 @@ func (d *Dialogs) ShowSearchExplorerDialog(sidebar *Sidebar) {
 		AddItem(nil, 0, 1, false)
 
 	d.app.showDialog(flex)
+}
+
+func (d *Dialogs) quoteTableNameWithConn(connID, tableName string) string {
+	connConfig := d.app.config.GetConnectionByID(connID)
+	if connConfig != nil && connConfig.Type == model.TypeMySQL {
+		parts := strings.Split(tableName, ".")
+		for i, part := range parts {
+			parts[i] = fmt.Sprintf("`%s`", part)
+		}
+		return strings.Join(parts, ".")
+	}
+	parts := strings.Split(tableName, ".")
+	for i, part := range parts {
+		parts[i] = fmt.Sprintf("\"%s\"", part)
+	}
+	return strings.Join(parts, ".")
 }
 
 // extractTableName parses the table name from a SELECT query string

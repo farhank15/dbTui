@@ -94,6 +94,9 @@ func NewResultTable(app *App) *ResultTable {
 					rt.EditCell(row, col)
 					return nil
 				}
+			case 'r', 'R':
+				app.RefreshActiveQuery()
+				return nil
 			}
 		}
 		return event

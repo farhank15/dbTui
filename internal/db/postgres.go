@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -14,6 +15,7 @@ import (
 
 // PostgresConnector implements Connector for PostgreSQL
 type PostgresConnector struct {
+	mu  sync.Mutex
 	db  *sql.DB
 	cfg model.Connection
 }
@@ -67,6 +69,8 @@ func (p *PostgresConnector) Connect(config model.Connection) error {
 }
 
 func (p *PostgresConnector) Close() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.db != nil {
 		return p.db.Close()
 	}
@@ -74,6 +78,8 @@ func (p *PostgresConnector) Close() error {
 }
 
 func (p *PostgresConnector) Ping() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.db == nil {
 		return fmt.Errorf("not connected")
 	}
@@ -81,6 +87,8 @@ func (p *PostgresConnector) Ping() error {
 }
 
 func (p *PostgresConnector) IsConnected() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.db != nil && p.db.Ping() == nil
 }
 
@@ -89,6 +97,9 @@ func (p *PostgresConnector) GetDB() *sql.DB {
 }
 
 func (p *PostgresConnector) GetDatabases() ([]string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -110,6 +121,9 @@ func (p *PostgresConnector) GetDatabases() ([]string, error) {
 }
 
 func (p *PostgresConnector) useDB(dbName string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	if p.cfg.Database == dbName {
 		return nil
 	}
@@ -139,21 +153,17 @@ func (p *PostgresConnector) useDB(dbName string) error {
 
 func (p *PostgresConnector) GetTables(dbName string) ([]model.TableInfo, error) {
 	if err := p.useDB(dbName); err != nil {
-		// If we can't switch database, try querying with schema
-		return p.getTablesForSchema("public")
+		// Even if switching fails, we'll try to query
 	}
-	return p.getTablesForSchema("public")
-}
 
-func (p *PostgresConnector) getTablesForSchema(schema string) ([]model.TableInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	query := `SELECT table_name FROM information_schema.tables 
-		WHERE table_schema = $1 AND table_type = 'BASE TABLE' 
-		ORDER BY table_name`
+	query := `SELECT table_schema, table_name FROM information_schema.tables 
+		WHERE table_schema NOT IN ('pg_catalog', 'information_schema') AND table_type = 'BASE TABLE' 
+		ORDER BY table_schema, table_name`
 
-	rows, err := p.db.QueryContext(ctx, query, schema)
+	rows, err := p.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -161,11 +171,15 @@ func (p *PostgresConnector) getTablesForSchema(schema string) ([]model.TableInfo
 
 	var tables []model.TableInfo
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var schema, name string
+		if err := rows.Scan(&schema, &name); err != nil {
 			return nil, err
 		}
-		tables = append(tables, model.TableInfo{Name: name})
+		fullName := name
+		if schema != "public" {
+			fullName = fmt.Sprintf("%s.%s", schema, name)
+		}
+		tables = append(tables, model.TableInfo{Name: fullName})
 	}
 	return tables, nil
 }
@@ -193,13 +207,23 @@ func (p *PostgresConnector) GetColumns(dbName, tableName string) ([]model.Column
 	LEFT JOIN (
 		SELECT ku.column_name, tc.table_schema, tc.table_name
 		FROM information_schema.table_constraints tc
-		JOIN information_schema.key_column_usage ku ON tc.constraint_name = ku.constraint_name
+		JOIN information_schema.key_column_usage ku 
+			ON tc.constraint_name = ku.constraint_name
+			AND tc.constraint_schema = ku.constraint_schema
 		WHERE tc.constraint_type = 'PRIMARY KEY'
 	) pk ON c.table_schema = pk.table_schema AND c.table_name = pk.table_name AND c.column_name = pk.column_name
-	WHERE c.table_schema = 'public' AND c.table_name = $1
+	WHERE c.table_schema = $1 AND c.table_name = $2
 	ORDER BY c.ordinal_position`
 
-	rows, err := p.db.QueryContext(ctx, query, tableName)
+	schema := "public"
+	table := tableName
+	if strings.Contains(tableName, ".") {
+		parts := strings.SplitN(tableName, ".", 2)
+		schema = parts[0]
+		table = parts[1]
+	}
+
+	rows, err := p.db.QueryContext(ctx, query, schema, table)
 	if err != nil {
 		return nil, err
 	}
@@ -241,13 +265,22 @@ func (p *PostgresConnector) GetIndexes(dbName, tableName string) ([]model.IndexI
 		ix.indisunique as is_unique,
 		ix.indisprimary as is_primary
 	FROM pg_class t
+	JOIN pg_namespace n ON n.oid = t.relnamespace
 	JOIN pg_index ix ON t.oid = ix.indrelid
 	JOIN pg_class i ON i.oid = ix.indexrelid
 	JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey)
-	WHERE t.relkind = 'r' AND t.relname = $1
+	WHERE t.relkind = 'r' AND t.relname = $1 AND n.nspname = $2
 	ORDER BY i.relname, a.attnum`
 
-	rows, err := p.db.QueryContext(ctx, query, tableName)
+	schema := "public"
+	table := tableName
+	if strings.Contains(tableName, ".") {
+		parts := strings.SplitN(tableName, ".", 2)
+		schema = parts[0]
+		table = parts[1]
+	}
+
+	rows, err := p.db.QueryContext(ctx, query, table, schema)
 	if err != nil {
 		return nil, err
 	}
@@ -294,12 +327,26 @@ func (p *PostgresConnector) GetForeignKeys(dbName, tableName string) ([]model.Fo
 		rc.delete_rule,
 		rc.update_rule
 	FROM information_schema.table_constraints tc
-	JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
-	JOIN information_schema.constraint_column_usage ccu ON tc.constraint_name = ccu.constraint_name
-	JOIN information_schema.referential_constraints rc ON tc.constraint_name = rc.constraint_name
-	WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = $1`
+	JOIN information_schema.key_column_usage kcu 
+		ON tc.constraint_name = kcu.constraint_name 
+		AND tc.constraint_schema = kcu.constraint_schema
+	JOIN information_schema.constraint_column_usage ccu 
+		ON tc.constraint_name = ccu.constraint_name 
+		AND tc.constraint_schema = ccu.constraint_schema
+	JOIN information_schema.referential_constraints rc 
+		ON tc.constraint_name = rc.constraint_name
+		AND tc.constraint_schema = rc.constraint_schema
+	WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = $1 AND tc.table_name = $2`
 
-	rows, err := p.db.QueryContext(ctx, query, tableName)
+	schema := "public"
+	table := tableName
+	if strings.Contains(tableName, ".") {
+		parts := strings.SplitN(tableName, ".", 2)
+		schema = parts[0]
+		table = parts[1]
+	}
+
+	rows, err := p.db.QueryContext(ctx, query, schema, table)
 	if err != nil {
 		return nil, err
 	}
@@ -349,6 +396,9 @@ func (p *PostgresConnector) GetTableDetail(dbName, tableName string) (*model.Tab
 }
 
 func (p *PostgresConnector) ExecuteQuery(query string) (*model.QueryResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	start := time.Now()
 	trimmed := strings.TrimSpace(strings.ToUpper(query))
 	isSelect := strings.HasPrefix(trimmed, "SELECT") ||
@@ -613,5 +663,9 @@ func (p *PostgresConnector) GetRowCount(dbName, tableName string) (int64, error)
 }
 
 func pqQuoteIdent(name string) string {
-	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+	parts := strings.Split(name, ".")
+	for i, part := range parts {
+		parts[i] = `"` + strings.ReplaceAll(part, `"`, `""`) + `"`
+	}
+	return strings.Join(parts, ".")
 }
