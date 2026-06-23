@@ -5,3 +5,7 @@ dbTui.exe
 
 # GoReleaser output
 dist/
+RELEASE.md
+
+# Debug logs
+debug.log
