@@ -59,6 +59,12 @@ func NewResultTable(app *App) *ResultTable {
 		case tcell.KeyCtrlE:
 			app.ExportResults()
 			return nil
+		case tcell.KeyDelete:
+			row, _ := rt.Table.GetSelection()
+			if rt.result != nil && row > 0 && row <= len(rt.result.Rows) {
+				rt.DeleteRow(row)
+				return nil
+			}
 		case tcell.KeyEnter:
 			row, col := rt.Table.GetSelection()
 			if rt.result != nil && row > 0 && row <= len(rt.result.Rows) && col >= 0 && col < len(rt.result.Columns) {
@@ -94,12 +100,18 @@ func NewResultTable(app *App) *ResultTable {
 					rt.EditCell(row, col)
 					return nil
 				}
+			case 'd', 'D':
+				row, _ := rt.Table.GetSelection()
+				if rt.result != nil && row > 0 && row <= len(rt.result.Rows) {
+					rt.DeleteRow(row)
+					return nil
+				}
 			case 'r', 'R':
 				app.RefreshActiveQuery()
 				return nil
 			}
 		}
-		return event
+	return event
 	})
 
 	return rt
@@ -375,6 +387,104 @@ func boolToStr(b bool) string {
 		return "YES"
 	}
 	return "NO"
+}
+
+// DeleteRow deletes the selected row from the database
+func (rt *ResultTable) DeleteRow(row int) {
+	result := rt.result
+	if result == nil || result.Table == "" || result.ConnID == "" || result.Database == "" {
+		rt.app.statusBar.ShowError("Cannot delete row: Table context not available")
+		return
+	}
+
+	connector, err := rt.app.dbManager.GetConnector(result.ConnID)
+	if err != nil {
+		rt.app.statusBar.ShowError(fmt.Sprintf("Error: %v", err))
+		return
+	}
+
+	rt.app.statusBar.ShowInfo("Preparing delete...")
+	go func() {
+		detail, err := connector.GetTableDetail(result.Database, result.Table)
+		if err != nil {
+			rt.app.app.QueueUpdateDraw(func() {
+				rt.app.statusBar.ShowError(fmt.Sprintf("Failed to fetch table details: %v", err))
+			})
+			return
+		}
+
+		rt.app.app.QueueUpdateDraw(func() {
+			// Find primary key columns
+			var pkCols []string
+			for _, idx := range detail.Indexes {
+				if idx.Primary {
+					pkCols = idx.Columns
+					break
+				}
+			}
+
+			// Fallback: check if there's an 'id' or 'ID' column
+			if len(pkCols) == 0 {
+				for _, c := range detail.Table.Columns {
+					if strings.ToLower(c.Name) == "id" {
+						pkCols = []string{c.Name}
+						break
+					}
+				}
+			}
+
+			// Construct WHERE clause
+			var whereClause string
+			var whereArgs []interface{}
+
+			connConfig := rt.app.config.GetConnectionByID(result.ConnID)
+			quote := func(name string) string {
+				if connConfig != nil && connConfig.Type == model.TypeMySQL {
+					return fmt.Sprintf("`%s`", name)
+				}
+				return fmt.Sprintf("\"%s\"", name)
+			}
+
+			if len(pkCols) > 0 {
+				var parts []string
+				for _, pkCol := range pkCols {
+					pkColIdx := -1
+					for idx, name := range result.Columns {
+						if strings.ToLower(name) == strings.ToLower(pkCol) {
+							pkColIdx = idx
+							break
+						}
+					}
+					if pkColIdx != -1 {
+						val := result.Rows[row-1][pkColIdx]
+						parts = append(parts, fmt.Sprintf("%s = ?", quote(pkCol)))
+						whereArgs = append(whereArgs, val)
+					}
+				}
+				whereClause = strings.Join(parts, " AND ")
+			}
+
+			if whereClause == "" {
+				var parts []string
+				for idx, name := range result.Columns {
+					val := result.Rows[row-1][idx]
+					if val == "NULL" {
+						parts = append(parts, fmt.Sprintf("%s IS NULL", quote(name)))
+					} else {
+						parts = append(parts, fmt.Sprintf("%s = ?", quote(name)))
+						whereArgs = append(whereArgs, val)
+					}
+				}
+				whereClause = strings.Join(parts, " AND ")
+			}
+
+			rt.app.dialogs.ShowDeleteRowConfirmDialog(result.Database, result.Table, whereClause, whereArgs, connector, func() {
+				// Refresh the table view after successful delete
+				rt.app.RefreshActiveQuery()
+				rt.app.statusBar.ShowSuccess("Row deleted successfully!")
+			})
+		})
+	}()
 }
 
 // EditCell triggers inline cell editing for a specific cell in the grid

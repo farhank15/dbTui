@@ -479,6 +479,13 @@ func (s *Sidebar) onInput(event *tcell.EventKey) *tcell.EventKey {
 		case 'c', 'C':
 			s.app.ShowConnectionDialog(nil)
 			return nil
+		case 'n', 'N':
+			// New database
+			node := s.treeView.GetCurrentNode()
+			if ref, ok := node.GetReference().(*sidebarRef); ok && (ref.kind == "connection" || ref.kind == "database") {
+				s.app.dialogs.ShowCreateDBDialog(ref.id)
+			}
+			return nil
 		case 'r', 'R':
 			s.ForceRefresh()
 			return nil
@@ -493,6 +500,27 @@ func (s *Sidebar) onInput(event *tcell.EventKey) *tcell.EventKey {
 			node := s.treeView.GetCurrentNode()
 			if ref, ok := node.GetReference().(*sidebarRef); ok && ref.kind == "table" {
 				s.app.dialogs.ShowSearchDataDialog(ref)
+			}
+			return nil
+		case 'a', 'A':
+			// Add column to table
+			node := s.treeView.GetCurrentNode()
+			if ref, ok := node.GetReference().(*sidebarRef); ok && ref.kind == "table" {
+				s.app.dialogs.ShowAddColumnDialog(ref.id, ref.db, ref.table)
+			}
+			return nil
+		case 'm', 'M':
+			// Modify column
+			node := s.treeView.GetCurrentNode()
+			if ref, ok := node.GetReference().(*sidebarRef); ok && ref.kind == "table" {
+				s.app.dialogs.ShowModifyColumnDialog(ref.id, ref.db, ref.table)
+			}
+			return nil
+		case 'x', 'X':
+			// Drop column
+			node := s.treeView.GetCurrentNode()
+			if ref, ok := node.GetReference().(*sidebarRef); ok && ref.kind == "table" {
+				s.app.dialogs.ShowDropColumnDialog(ref.id, ref.db, ref.table)
 			}
 			return nil
 		case 'v', 'V':

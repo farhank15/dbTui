@@ -425,6 +425,70 @@ func (d *Dialogs) ShowConfirmDialog(message string, onConfirm func()) {
 				onConfirm()
 			}
 		})
+	modal.SetBackgroundColor(Styles.Background)
+	modal.SetButtonBackgroundColor(Styles.Surface)
+	d.app.showDialog(modal)
+}
+
+// ShowDeleteRowConfirmDialog shows a confirmation dialog before deleting a row
+func (d *Dialogs) ShowDeleteRowConfirmDialog(dbName, tableName, whereClause string, whereArgs []interface{}, connector db.Connector, onSuccess func()) {
+	modal := tview.NewModal().
+		SetText(fmt.Sprintf("[red]🗑️ Delete Row?[::-]\n\nThis will permanently delete this row from [yellow]%s[::-].[yellow]%s[::-]\n\nAre you sure?", dbName, tableName)).
+		AddButtons([]string{"🗑️ Delete", "Cancel"}).
+		SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+			d.app.closeDialog()
+			if buttonIndex == 0 {
+				d.app.statusBar.ShowInfo("Deleting row...")
+				go func() {
+					dbConn := connector.GetDB()
+
+					var query string
+					var args []interface{}
+
+					// Build parameterized DELETE query
+					state := d.app.dbManager.GetConnectionState(d.app.activeConn)
+					if state != nil && state.Connection.Type == model.TypePostgres {
+						// Convert ? placeholders to $1, $2, ...
+						placeholderIdx := 1
+						var pgQuery strings.Builder
+						pgQuery.WriteString(fmt.Sprintf("DELETE FROM \"%s\" WHERE ", tableName))
+						
+						// Rebuild WHERE clause with $ placeholders
+						whereParts := strings.Split(whereClause, " AND ")
+						for i, part := range whereParts {
+							if i > 0 {
+								pgQuery.WriteString(" AND ")
+							}
+							// Replace ? with $N
+							pgQuery.WriteString(strings.Replace(part, "?", fmt.Sprintf("$%d", placeholderIdx), 1))
+							placeholderIdx++
+						}
+						query = pgQuery.String()
+						args = whereArgs
+					} else {
+						quotedTable := fmt.Sprintf("\"%s\"", tableName)
+						if state != nil && state.Connection.Type == model.TypeMySQL {
+							quotedTable = fmt.Sprintf("`%s`", tableName)
+						}
+						query = fmt.Sprintf("DELETE FROM %s WHERE %s", quotedTable, whereClause)
+						args = whereArgs
+					}
+
+					_, err := dbConn.Exec(query, args...)
+
+					d.app.app.QueueUpdateDraw(func() {
+						if err != nil {
+							d.app.statusBar.ShowError(fmt.Sprintf("Failed to delete row: %v", err))
+						} else {
+							onSuccess()
+						}
+					})
+				}()
+			}
+		})
+	modal.SetBackgroundColor(Styles.Background)
+	modal.SetButtonBackgroundColor(Styles.Surface)
+
 	d.app.showDialog(modal)
 }
 
@@ -451,41 +515,61 @@ func (d *Dialogs) ShowExportDialog() {
 func (d *Dialogs) ShowHelpDialog() {
 	helpText := "[::b]Keyboard Shortcuts:[::-]\n\n" +
 		"  [green]Ctrl+N[::-]    New connection\n" +
-		"  [green]Ctrl+D[::-]    Disconnect\n" +
+		"  [green]Ctrl+D[::-]    Disconnect / Delete row (results)\n" +
 		"  [green]Ctrl+J[::-]    Execute query (Ctrl+Enter)\n" +
 		"  [green]Ctrl+E[::-]    Export results to CSV\n" +
 		"  [green]Ctrl+L[::-]    Clear query panel\n" +
 		"  [green]Ctrl+B[::-]    Toggle sidebar (Show/Hide)\n" +
 		"  [green]Ctrl+H[::-]    Toggle SQL editor (Show/Hide)\n" +
+		"  [green]Ctrl+T[::-]    SQL templates\n" +
 		"  [green]F1[::-]        Show this help\n" +
+		"  [green]F5[::-]        Refresh\n" +
 		"  [green]Tab[::-]       Navigate panels\n" +
-		"  [green]Esc[::-]       Back / Close dialog\n" +
-		"  [green]F5[::-]        Refresh\n\n" +
-		"[::b]Sidebar:[::-]\n" +
+		"  [green]Esc[::-]       Back / Close dialog\n\n" +
+		"[::b]Sidebar (Explorer):[::-]\n" +
 		"  [green]/[::-]          Search/filter tables\n" +
-		"  [green]f[::-]          Search data in selected table column\n" +
-		"  [green]y[::-]          Copy database or table name to clipboard\n" +
+		"  [green]n[::-]          New database\n" +
+		"  [green]f[::-]          Search data in selected table\n" +
+		"  [green]v[::-]          View table DDL (structure)\n" +
+		"  [green]y[::-]          Copy name to clipboard\n" +
 		"  [green]c[::-]          New connection\n" +
 		"  [green]r[::-]          Refresh connections\n" +
 		"  [green]d[::-]          Disconnect\n" +
-		"  [green]Delete[::-]     Delete connection\n\n" +
-		"[::b]Table Detail (Results Panel):[::-]\n" +
-		"  [green]/[::-]          Filter columns by name\n"
+		"  [green]Delete[::-]     Delete connection / database\n" +
+		"  [green]+/-[::-]        Expand/Collapse all\n\n" +
+		"[::b]Table Actions (sidebar → table node):[::-]\n" +
+		"  [green]a[::-]          Add column\n" +
+		"  [green]m[::-]          Modify column\n" +
+		"  [green]x[::-]          Drop column\n" +
+		"  [green]f[::-]          Search data in column\n" +
+		"  [green]v[::-]          View table DDL\n" +
+		"  [green]Enter[::-]      Query table\n" +
+		"  [green]y[::-]          Copy table name\n\n" +
+		"[::b]Results Panel:[::-]\n" +
+		"  [green]e[::-]          Edit selected cell value\n" +
+		"  [green]d / Delete[::-]  Delete selected row\n" +
+		"  [green]y[::-]          Copy cell value to clipboard\n" +
+		"  [green]r / F5[::-]     Refresh data\n" +
+		"  [green]/[::-]          Filter rows by value\n" +
+		"  [green]Enter[::-]      Inspect full cell value\n" +
+		"  [green]Ctrl+E[::-]     Export to CSV\n"
 
 	textView := tview.NewTextView().
 		SetDynamicColors(true).
-		SetText(helpText).
 		SetTextAlign(tview.AlignLeft)
+	textView.SetText(helpText)
 
 	textView.SetBorder(true).SetTitle(" Help ").SetTitleAlign(tview.AlignLeft)
+	textView.SetBorderColor(Styles.BorderFocus)
+	textView.SetBackgroundColor(Styles.Background)
 
 	flex := tview.NewFlex().
 		AddItem(nil, 0, 1, false).
 		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
-			AddItem(nil, 0, 1, false).
+			AddItem(nil, 1, 0, false).
 			AddItem(textView, 0, 1, true).
-			AddItem(nil, 0, 1, false),
-			50, 1, true).
+			AddItem(nil, 1, 0, false),
+			55, 1, true).
 		AddItem(nil, 0, 1, false)
 
 	flex.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
@@ -497,6 +581,325 @@ func (d *Dialogs) ShowHelpDialog() {
 	})
 
 	d.app.showDialog(flex)
+}
+
+// ShowAddColumnDialog shows a form to add a new column to a table
+func (d *Dialogs) ShowAddColumnDialog(connID, dbName, tableName string) {
+	form := tview.NewForm()
+	col := model.ColumnDef{Type: "VARCHAR"}
+
+	form.AddInputField("Column Name", "", 20, nil, func(text string) {
+		col.Name = text
+	})
+
+	typeOptions := []string{"VARCHAR", "INTEGER", "TEXT", "BOOLEAN", "BIGINT", "FLOAT", "DECIMAL", "DATE", "TIMESTAMP", "BLOB"}
+	form.AddDropDown("Type", typeOptions, 0, func(option string, index int) {
+		col.Type = option
+	})
+
+	form.AddInputField("Length (optional)", "", 6, nil, func(text string) {
+		fmt.Sscanf(text, "%d", &col.Length)
+	})
+
+	form.AddCheckbox("Nullable", true, func(checked bool) {
+		col.Nullable = checked
+	})
+
+	form.AddInputField("Default (optional)", "", 20, nil, func(text string) {
+		col.Default = text
+	})
+
+	form.AddCheckbox("Unique", false, func(checked bool) {
+		col.Unique = checked
+	})
+
+	form.AddButton("Add", func() {
+		if col.Name == "" {
+			d.app.statusBar.ShowError("Column name is required")
+			return
+		}
+		d.app.closeDialog()
+		d.app.statusBar.ShowInfo(fmt.Sprintf("Adding column '%s'...", col.Name))
+		go func() {
+			conn, err := d.app.dbManager.GetConnector(connID)
+			if err != nil {
+				d.app.app.QueueUpdateDraw(func() {
+					d.app.statusBar.ShowError(fmt.Sprintf("Error: %v", err))
+				})
+				return
+			}
+			if err := conn.AddColumn(dbName, tableName, col); err != nil {
+				d.app.app.QueueUpdateDraw(func() {
+					d.app.statusBar.ShowError(fmt.Sprintf("Failed to add column: %v", err))
+				})
+				return
+			}
+			d.app.app.QueueUpdateDraw(func() {
+				d.app.statusBar.ShowSuccess(fmt.Sprintf("Column '%s' added to %s!", col.Name, tableName))
+			})
+		}()
+	})
+	form.AddButton("Cancel", func() {
+		d.app.closeDialog()
+	})
+	form.SetBorder(true).SetTitle(fmt.Sprintf(" Add Column: %s ", tableName)).SetTitleAlign(tview.AlignLeft)
+	d.app.showDialog(form)
+}
+
+// ShowModifyColumnDialog shows a form to modify an existing column
+func (d *Dialogs) ShowModifyColumnDialog(connID, dbName, tableName string) {
+	d.app.statusBar.ShowInfo("Loading column info...")
+	go func() {
+		conn, err := d.app.dbManager.GetConnector(connID)
+		if err != nil {
+			d.app.app.QueueUpdateDraw(func() {
+				d.app.statusBar.ShowError(fmt.Sprintf("Error: %v", err))
+			})
+			return
+		}
+		detail, err := conn.GetTableDetail(dbName, tableName)
+		if err != nil {
+			d.app.app.QueueUpdateDraw(func() {
+				d.app.statusBar.ShowError(fmt.Sprintf("Failed to load columns: %v", err))
+			})
+			return
+		}
+
+		d.app.app.QueueUpdateDraw(func() {
+			if len(detail.Table.Columns) == 0 {
+				d.app.statusBar.ShowError("No columns found")
+				return
+			}
+
+			// Build list of column names for dropdown
+			colNames := make([]string, len(detail.Table.Columns))
+			for i, c := range detail.Table.Columns {
+				colNames[i] = c.Name
+			}
+
+			form := tview.NewForm()
+			selectedCol := detail.Table.Columns[0]
+
+			form.AddDropDown("Column", colNames, 0, func(option string, index int) {
+				selectedCol = detail.Table.Columns[index]
+				// Rebuild form with selected column values
+				d.app.closeDialog()
+				d.showModifyColumnForm(connID, dbName, tableName, &selectedCol, conn)
+			})
+
+			form.AddButton("Select", func() {
+				d.app.closeDialog()
+				d.showModifyColumnForm(connID, dbName, tableName, &selectedCol, conn)
+			})
+			form.AddButton("Cancel", func() {
+				d.app.closeDialog()
+			})
+			form.SetBorder(true).SetTitle(fmt.Sprintf(" Modify Column: %s ", tableName)).SetTitleAlign(tview.AlignLeft)
+			d.app.showDialog(form)
+		})
+	}()
+}
+
+func (d *Dialogs) showModifyColumnForm(connID, dbName, tableName string, col *model.ColumnInfo, connector db.Connector) {
+	form := tview.NewForm()
+	newCol := model.ColumnDef{
+		Name:     col.Name,
+		Type:     col.Type,
+		Nullable: col.Nullable == "YES",
+		Default:  col.Default,
+	}
+
+	// Parse length from type if present (e.g. "varchar(255)")
+	if strings.Contains(col.Type, "(") {
+		parts := strings.SplitN(col.Type, "(", 2)
+		newCol.Type = parts[0]
+		if len(parts) > 1 {
+			lenStr := strings.TrimRight(parts[1], ")")
+			fmt.Sscanf(lenStr, "%d", &newCol.Length)
+		}
+	} else {
+		// Normalize type names for dropdown
+		switch strings.ToUpper(col.Type) {
+		case "INTEGER", "INT", "SMALLINT", "BIGINT":
+			newCol.Type = "INTEGER"
+		case "CHARACTER VARYING", "CHARACTER":
+			newCol.Type = "VARCHAR"
+		}
+	}
+
+	form.AddInputField("Column Name", newCol.Name, 20, nil, func(text string) {
+		newCol.Name = text
+	})
+
+	typeOptions := []string{"VARCHAR", "INTEGER", "TEXT", "BOOLEAN", "BIGINT", "FLOAT", "DECIMAL", "DATE", "TIMESTAMP", "BLOB"}
+	currentTypeIdx := 0
+	for i, t := range typeOptions {
+		if strings.EqualFold(t, newCol.Type) {
+			currentTypeIdx = i
+			break
+		}
+	}
+
+	form.AddDropDown("Type", typeOptions, currentTypeIdx, func(option string, index int) {
+		newCol.Type = option
+	})
+
+	lenStr := ""
+	if newCol.Length > 0 {
+		lenStr = fmt.Sprintf("%d", newCol.Length)
+	}
+	form.AddInputField("Length (optional)", lenStr, 6, nil, func(text string) {
+		fmt.Sscanf(text, "%d", &newCol.Length)
+	})
+
+	form.AddCheckbox("Nullable", newCol.Nullable, func(checked bool) {
+		newCol.Nullable = checked
+	})
+
+	form.AddInputField("Default (optional)", newCol.Default, 20, nil, func(text string) {
+		newCol.Default = text
+	})
+
+	form.AddCheckbox("Unique", newCol.Unique, func(checked bool) {
+		newCol.Unique = checked
+	})
+
+	form.AddButton("Save", func() {
+		if newCol.Name == "" {
+			d.app.statusBar.ShowError("Column name is required")
+			return
+		}
+		d.app.closeDialog()
+		d.app.statusBar.ShowInfo(fmt.Sprintf("Modifying column '%s'...", col.Name))
+		go func() {
+			if err := connector.ModifyColumn(dbName, tableName, col.Name, newCol); err != nil {
+				d.app.app.QueueUpdateDraw(func() {
+					d.app.statusBar.ShowError(fmt.Sprintf("Failed to modify column: %v", err))
+				})
+				return
+			}
+			d.app.app.QueueUpdateDraw(func() {
+				d.app.statusBar.ShowSuccess(fmt.Sprintf("Column '%s' modified!", newCol.Name))
+			})
+		}()
+	})
+	form.AddButton("Cancel", func() {
+		d.app.closeDialog()
+	})
+	form.SetBorder(true).SetTitle(fmt.Sprintf(" Edit Column: %s ", col.Name)).SetTitleAlign(tview.AlignLeft)
+	d.app.showDialog(form)
+}
+
+// ShowDropColumnDialog shows a dialog to drop a column
+func (d *Dialogs) ShowDropColumnDialog(connID, dbName, tableName string) {
+	d.app.statusBar.ShowInfo("Loading columns...")
+	go func() {
+		conn, err := d.app.dbManager.GetConnector(connID)
+		if err != nil {
+			d.app.app.QueueUpdateDraw(func() {
+				d.app.statusBar.ShowError(fmt.Sprintf("Error: %v", err))
+			})
+			return
+		}
+		detail, err := conn.GetTableDetail(dbName, tableName)
+		if err != nil {
+			d.app.app.QueueUpdateDraw(func() {
+				d.app.statusBar.ShowError(fmt.Sprintf("Failed to load columns: %v", err))
+			})
+			return
+		}
+
+		d.app.app.QueueUpdateDraw(func() {
+			if len(detail.Table.Columns) == 0 {
+				d.app.statusBar.ShowError("No columns found")
+				return
+			}
+
+			colNames := make([]string, len(detail.Table.Columns))
+			for i, c := range detail.Table.Columns {
+				colNames[i] = c.Name
+			}
+
+			form := tview.NewForm()
+			selectedCol := detail.Table.Columns[0].Name
+
+			form.AddDropDown("Column", colNames, 0, func(option string, index int) {
+				selectedCol = option
+			})
+
+			form.AddButton("🗑️ Drop", func() {
+				d.app.closeDialog()
+				d.ShowConfirmDialog(
+					fmt.Sprintf("Are you sure you want to DROP column '%s' from '%s'?\nThis cannot be undone!", selectedCol, tableName),
+					func() {
+						d.app.statusBar.ShowInfo(fmt.Sprintf("Dropping column '%s'...", selectedCol))
+						go func() {
+							if err := conn.DropColumn(dbName, tableName, selectedCol); err != nil {
+								d.app.app.QueueUpdateDraw(func() {
+									d.app.statusBar.ShowError(fmt.Sprintf("Failed to drop column: %v", err))
+								})
+								return
+							}
+							d.app.app.QueueUpdateDraw(func() {
+								d.app.statusBar.ShowSuccess(fmt.Sprintf("Column '%s' dropped!", selectedCol))
+							})
+						}()
+					},
+				)
+			})
+			form.AddButton("Cancel", func() {
+				d.app.closeDialog()
+			})
+			form.SetBorder(true).SetTitle(fmt.Sprintf(" Drop Column: %s ", tableName)).SetTitleAlign(tview.AlignLeft)
+			d.app.showDialog(form)
+		})
+	}()
+}
+
+// ShowCreateDBDialog shows a dialog to create a new database
+func (d *Dialogs) ShowCreateDBDialog(connID string) {
+	if connID == "" || !d.app.dbManager.IsConnected(connID) {
+		d.app.statusBar.ShowError("No active connection selected")
+		return
+	}
+
+	form := tview.NewForm()
+	dbName := ""
+	form.AddInputField("Database Name", "", 30, nil, func(text string) {
+		dbName = text
+	})
+	form.AddButton("Create", func() {
+		if dbName == "" {
+			d.app.statusBar.ShowError("Database name is required")
+			return
+		}
+		d.app.closeDialog()
+		go func() {
+			conn, err := d.app.dbManager.GetConnector(connID)
+			if err != nil {
+				d.app.app.QueueUpdateDraw(func() {
+					d.app.statusBar.ShowError(fmt.Sprintf("Error: %v", err))
+				})
+				return
+			}
+			if err := conn.CreateDatabase(dbName); err != nil {
+				d.app.app.QueueUpdateDraw(func() {
+					d.app.statusBar.ShowError(fmt.Sprintf("Failed to create database: %v", err))
+				})
+				return
+			}
+			d.app.app.QueueUpdateDraw(func() {
+				d.app.statusBar.ShowSuccess(fmt.Sprintf("Database '%s' created!", dbName))
+				_ = d.app.dbManager.RefreshDatabases(connID)
+				d.app.sidebar.RefreshConnections()
+			})
+		}()
+	})
+	form.AddButton("Cancel", func() {
+		d.app.closeDialog()
+	})
+	form.SetBorder(true).SetTitle(" Create Database ").SetTitleAlign(tview.AlignLeft)
+	d.app.showDialog(form)
 }
 
 // ShowDatabaseContextMenu shows context menu for a database
