@@ -32,7 +32,7 @@ func (d *Dialogs) ShowConnectionDialog(conn *model.Connection) {
 		}
 	}
 
-	form.AddInputField("Name", conn.Name, 30, nil, func(text string) {
+	form.AddInputField("Name", conn.Name, 22, nil, func(text string) {
 		conn.Name = text
 	})
 
@@ -66,7 +66,7 @@ func (d *Dialogs) ShowConnectionDialog(conn *model.Connection) {
 		}
 	})
 
-	form.AddInputField("Host", conn.Host, 30, nil, func(text string) {
+	form.AddInputField("Host", conn.Host, 22, nil, func(text string) {
 		conn.Host = text
 	})
 
@@ -75,19 +75,19 @@ func (d *Dialogs) ShowConnectionDialog(conn *model.Connection) {
 		fmt.Sscanf(text, "%d", &conn.Port)
 	})
 
-	form.AddInputField("User", conn.User, 30, nil, func(text string) {
+	form.AddInputField("User", conn.User, 22, nil, func(text string) {
 		conn.User = text
 	})
 
-	form.AddPasswordField("Password", conn.Password, 30, '*', func(text string) {
+	form.AddPasswordField("Password", conn.Password, 22, '*', func(text string) {
 		conn.Password = text
 	})
 
-	form.AddInputField("Database", conn.Database, 30, nil, func(text string) {
+	form.AddInputField("Database", conn.Database, 22, nil, func(text string) {
 		conn.Database = text
 	})
 
-	form.AddInputField("SQLite File", conn.File, 50, nil, func(text string) {
+	form.AddInputField("SQLite File", conn.File, 22, nil, func(text string) {
 		conn.File = text
 		conn.Database = text
 	})
@@ -142,7 +142,7 @@ func (d *Dialogs) ShowConnectionDialog(conn *model.Connection) {
 	form.SetBorder(true).SetTitle(" Database Connection ").SetTitleAlign(tview.AlignLeft)
 	form.SetButtonsAlign(tview.AlignCenter)
 
-	d.app.showDialog(wrapModal(form, 0, 0))
+	d.app.showDialog(wrapModal(form, 52, 18))
 }
 
 func (d *Dialogs) ShowCreateTableDialog(connID, dbName string) {
@@ -150,7 +150,7 @@ func (d *Dialogs) ShowCreateTableDialog(connID, dbName string) {
 	tableName := ""
 	var columns []model.ColumnDef
 
-	form.AddInputField("Table Name", "", 30, nil, func(text string) {
+	form.AddInputField("Table Name", "", 22, nil, func(text string) {
 		tableName = text
 	})
 
@@ -197,7 +197,7 @@ func (d *Dialogs) ShowCreateTableDialog(connID, dbName string) {
 
 	form.SetBorder(true).SetTitle(" Create Table ").SetTitleAlign(tview.AlignLeft)
 
-	d.app.showDialog(wrapModal(form, 0, 0))
+	d.app.showDialog(wrapModal(form, 52, 20))
 }
 
 func addColumnRow(form *tview.Form, columns *[]model.ColumnDef, idx int) {
@@ -261,10 +261,10 @@ func (d *Dialogs) ShowSearchDataDialog(ref *sidebarRef) {
 	searchValue := ""
 
 	form.AddTextView("Table", fmt.Sprintf("%s.%s", ref.db, ref.table), 30, 1, false, false)
-	form.AddInputField("Column", columnName, 30, nil, func(text string) {
+	form.AddInputField("Column", columnName, 20, nil, func(text string) {
 		columnName = text
 	})
-	form.AddInputField("Search Value", searchValue, 30, nil, func(text string) {
+	form.AddInputField("Search Value", searchValue, 20, nil, func(text string) {
 		searchValue = text
 	})
 
@@ -282,16 +282,15 @@ func (d *Dialogs) ShowSearchDataDialog(ref *sidebarRef) {
 				escapedVal += string(c)
 			}
 		}
-		var quotedColumn string
 		quotedTable := d.quoteTableNameWithConn(ref.id, ref.table)
 		connConfig := d.app.config.GetConnectionByID(ref.id)
+		var quotedColumn string
 		if connConfig != nil && connConfig.Type == model.TypeMySQL {
 			quotedColumn = fmt.Sprintf("`%s`", columnName)
 		} else {
 			quotedColumn = fmt.Sprintf("\"%s\"", columnName)
 		}
-		query := fmt.Sprintf("SELECT * FROM %s WHERE %s LIKE '%%%s%%';",
-			quotedTable, quotedColumn, escapedVal)
+		query := fmt.Sprintf("SELECT * FROM %s WHERE %s = '%s';", quotedTable, quotedColumn, escapedVal)
 		d.app.queryPanel.SetQueryText(query)
 		d.app.ExecuteQuery()
 	})
@@ -301,7 +300,7 @@ func (d *Dialogs) ShowSearchDataDialog(ref *sidebarRef) {
 	})
 
 	form.SetBorder(true).SetTitle(fmt.Sprintf(" Search in %s ", ref.table)).SetTitleAlign(tview.AlignLeft)
-	d.app.showDialog(wrapModal(form, 45, 0))
+	d.app.showDialog(wrapModal(form, 48, 9))
 }
 
 func (d *Dialogs) ShowTableContextMenu(connID, dbName, tableName string) {
@@ -338,7 +337,7 @@ func (d *Dialogs) ShowTableContextMenu(connID, dbName, tableName string) {
 			case 3:
 				renameForm := tview.NewForm()
 				newName := ""
-				renameForm.AddInputField("New Name", tableName, 30, nil, func(text string) {
+				renameForm.AddInputField("New Name", tableName, 20, nil, func(text string) {
 					newName = text
 				})
 				renameForm.AddButton("Rename", func() {
@@ -359,7 +358,7 @@ func (d *Dialogs) ShowTableContextMenu(connID, dbName, tableName string) {
 					d.app.closeDialog()
 				})
 				renameForm.SetBorder(true).SetTitle(" Rename Table ")
-				d.app.showDialog(wrapModal(renameForm, 40, 0))
+				d.app.showDialog(wrapModal(renameForm, 45, 7))
 			}
 		})
 	d.app.showDialog(modal)
@@ -572,7 +571,7 @@ func (d *Dialogs) ShowAddColumnDialog(connID, dbName, tableName string) {
 		d.app.closeDialog()
 	})
 	form.SetBorder(true).SetTitle(fmt.Sprintf(" Add Column: %s ", tableName)).SetTitleAlign(tview.AlignLeft)
-	d.app.showDialog(wrapModal(form, 0, 0))
+	d.app.showDialog(wrapModal(form, 50, 16))
 }
 
 func (d *Dialogs) ShowModifyColumnDialog(connID, dbName, tableName string) {
@@ -616,7 +615,7 @@ func (d *Dialogs) ShowModifyColumnDialog(connID, dbName, tableName string) {
 				d.app.closeDialog()
 			})
 			form.SetBorder(true).SetTitle(fmt.Sprintf(" Modify Column: %s ", tableName)).SetTitleAlign(tview.AlignLeft)
-			d.app.showDialog(wrapModal(form, 0, 0))
+			d.app.showDialog(wrapModal(form, 45, 7))
 		})
 	}()
 }
@@ -703,7 +702,7 @@ func (d *Dialogs) showModifyColumnForm(connID, dbName, tableName string, col *mo
 		d.app.closeDialog()
 	})
 	form.SetBorder(true).SetTitle(fmt.Sprintf(" Edit Column: %s ", col.Name)).SetTitleAlign(tview.AlignLeft)
-	d.app.showDialog(wrapModal(form, 0, 0))
+	d.app.showDialog(wrapModal(form, 50, 15))
 }
 
 func (d *Dialogs) ShowDropColumnDialog(connID, dbName, tableName string) {
@@ -761,7 +760,7 @@ func (d *Dialogs) ShowDropColumnDialog(connID, dbName, tableName string) {
 				d.app.closeDialog()
 			})
 			form.SetBorder(true).SetTitle(fmt.Sprintf(" Drop Column: %s ", tableName)).SetTitleAlign(tview.AlignLeft)
-			d.app.showDialog(wrapModal(form, 0, 0))
+			d.app.showDialog(wrapModal(form, 45, 7))
 		})
 	}()
 }
@@ -773,7 +772,7 @@ func (d *Dialogs) ShowCreateDBDialog(connID string) {
 	}
 	form := tview.NewForm()
 	dbName := ""
-	form.AddInputField("Database Name", "", 30, nil, func(text string) {
+	form.AddInputField("Database Name", "", 20, nil, func(text string) {
 		dbName = text
 	})
 	form.AddButton("Create", func() {
@@ -807,7 +806,7 @@ func (d *Dialogs) ShowCreateDBDialog(connID string) {
 		d.app.closeDialog()
 	})
 	form.SetBorder(true).SetTitle(" Create Database ").SetTitleAlign(tview.AlignLeft)
-	d.app.showDialog(wrapModal(form, 40, 0))
+	d.app.showDialog(wrapModal(form, 45, 0))
 }
 
 func (d *Dialogs) ShowDatabaseContextMenu(connID, dbName string) {
@@ -845,7 +844,7 @@ func (d *Dialogs) ShowDatabaseContextMenu(connID, dbName string) {
 func (d *Dialogs) ShowInputDialog(title, label, defaultValue string, callback func(string)) {
 	form := tview.NewForm()
 	inputValue := defaultValue
-	form.AddInputField(label, defaultValue, 40, nil, func(text string) {
+	form.AddInputField(label, defaultValue, 20, nil, func(text string) {
 		inputValue = text
 	})
 	form.AddButton("OK", func() {
@@ -856,7 +855,7 @@ func (d *Dialogs) ShowInputDialog(title, label, defaultValue string, callback fu
 		d.app.closeDialog()
 	})
 	form.SetBorder(true).SetTitle(fmt.Sprintf(" %s ", title))
-	d.app.showDialog(wrapModal(form, 40, 0))
+	d.app.showDialog(wrapModal(form, 48, 7))
 }
 
 func (d *Dialogs) ShowSearchRowsDialog() {
@@ -864,10 +863,10 @@ func (d *Dialogs) ShowSearchRowsDialog() {
 	columnName := d.app.resultTable.rowSearchColumn
 	searchValue := d.app.resultTable.rowSearchQuery
 
-	form.AddInputField("Column (Optional)", columnName, 30, nil, func(text string) {
+	form.AddInputField("Column (Optional)", columnName, 20, nil, func(text string) {
 		columnName = text
 	})
-	form.AddInputField("Search Value", searchValue, 30, nil, func(text string) {
+	form.AddInputField("Search Value", searchValue, 20, nil, func(text string) {
 		searchValue = text
 	})
 
@@ -929,7 +928,7 @@ func (d *Dialogs) ShowSearchRowsDialog() {
 	})
 
 	form.SetBorder(true).SetTitle(" Filter Results ").SetTitleAlign(tview.AlignLeft)
-	d.app.showDialog(wrapModal(form, 45, 0))
+	d.app.showDialog(wrapModal(form, 50, 0))
 }
 
 func (d *Dialogs) quoteTableNameWithConn(connID, tableName string) string {
@@ -1051,7 +1050,7 @@ func (d *Dialogs) ShowCellEditDialog(dbName, tableName, colName, currentVal, whe
 	form := tview.NewForm()
 	form.SetBorder(true).SetTitle(fmt.Sprintf(" Edit Cell: %s.%s ", tableName, colName))
 	var editedVal string = currentVal
-	form.AddInputField("Value", currentVal, 40, nil, func(text string) {
+	form.AddInputField("Value", currentVal, 22, nil, func(text string) {
 		editedVal = text
 	})
 	var isNull bool = (currentVal == "NULL")
@@ -1110,7 +1109,7 @@ func (d *Dialogs) ShowCellEditDialog(dbName, tableName, colName, currentVal, whe
 	form.AddButton("Cancel", func() {
 		d.app.closeDialog()
 	})
-	d.app.showDialog(wrapModal(form, 0, 0))
+	d.app.showDialog(wrapModal(form, 50, 0))
 }
 
 func (d *Dialogs) ShowCellInspectDialog(tableName, colName, cellValue string) {

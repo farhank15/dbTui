@@ -209,7 +209,44 @@ func (s *Sidebar) updateDatabaseNode(connID, dbName string, tables []model.Table
 	s.RebuildTree()
 }
 
+func (s *Sidebar) PrefetchTables(connID string) {
+	conn, err := s.app.dbManager.GetConnector(connID)
+	if err != nil {
+		return
+	}
+	state := s.app.dbManager.GetConnectionState(connID)
+	if state == nil || state.Databases == nil {
+		return
+	}
+
+	for _, dbName := range state.Databases {
+		dbName := dbName
+		cacheKey := connID + "_" + dbName
+		if s.cachedTables == nil {
+			s.cachedTables = make(map[string][]model.TableInfo)
+		}
+		if _, cached := s.cachedTables[cacheKey]; cached {
+			continue
+		}
+		s.cachedTables[cacheKey] = []model.TableInfo{} // Mark as loading
+		go func() {
+			tables, err := conn.GetTables(dbName)
+			s.app.app.QueueUpdateDraw(func() {
+				if err == nil {
+					s.cachedTables[cacheKey] = tables
+					if s.filterText != "" {
+						s.RebuildTree()
+					}
+				} else {
+					delete(s.cachedTables, cacheKey)
+				}
+			})
+		}()
+	}
+}
+
 func (s *Sidebar) RebuildTree() {
+	totalMatches := 0
 	var selectedKind, selectedID, selectedDB string
 	selectedNode := s.treeView.GetCurrentNode()
 	if selectedNode != nil {
@@ -264,27 +301,52 @@ func (s *Sidebar) RebuildTree() {
 		var dbNodesToAdd []*tview.TreeNode
 
 		if isConnected {
+			s.PrefetchTables(conn.ID)
 			state := s.app.dbManager.GetConnectionState(conn.ID)
 			if state != nil && state.Databases != nil {
 				for _, dbName := range state.Databases {
 					cacheKey := conn.ID + "_" + dbName
 					tables, isCached := s.cachedTables[cacheKey]
 
-					// Filter databases/tables if a filter text is active
+					var dbMatches bool
 					var matchedTables []model.TableInfo
-					dbMatches := s.filterText == "" || strings.Contains(strings.ToLower(dbName), strings.ToLower(s.filterText))
 
-					if isCached {
-						for _, table := range tables {
-							if s.filterText == "" || strings.Contains(strings.ToLower(table.Name), strings.ToLower(s.filterText)) {
-								matchedTables = append(matchedTables, table)
+					filterTextLower := strings.ToLower(s.filterText)
+					if strings.Contains(filterTextLower, "/") {
+						parts := strings.SplitN(filterTextLower, "/", 2)
+						dbPart := parts[0]
+						tablePart := parts[1]
+
+						dbMatches = dbPart == "" || strings.Contains(strings.ToLower(dbName), dbPart)
+
+						if isCached && dbMatches {
+							for _, table := range tables {
+								if tablePart == "" || strings.Contains(strings.ToLower(table.Name), tablePart) {
+									matchedTables = append(matchedTables, table)
+								}
 							}
 						}
-					}
 
-					// If the filter is active and neither the DB name matches nor does any table match, skip it
-					if s.filterText != "" && !dbMatches && len(matchedTables) == 0 {
-						continue
+						if s.filterText != "" && !dbMatches {
+							continue
+						}
+						if s.filterText != "" && dbMatches && tablePart != "" && len(matchedTables) == 0 {
+							continue
+						}
+					} else {
+						dbMatches = s.filterText == "" || strings.Contains(strings.ToLower(dbName), filterTextLower)
+
+						if isCached {
+							for _, table := range tables {
+								if dbMatches || s.filterText == "" || strings.Contains(strings.ToLower(table.Name), filterTextLower) {
+									matchedTables = append(matchedTables, table)
+								}
+							}
+						}
+
+						if s.filterText != "" && !dbMatches && len(matchedTables) == 0 {
+							continue
+						}
 					}
 
 					dbNode := s.createDatabaseNode(conn.ID, dbName)
@@ -341,6 +403,8 @@ func (s *Sidebar) RebuildTree() {
 			connNode.SetExpanded(expanded)
 
 			for _, dbn := range dbNodesToAdd {
+				totalMatches++
+				totalMatches += len(dbn.GetChildren())
 				connNode.AddChild(dbn)
 			}
 		} else {
@@ -355,10 +419,14 @@ func (s *Sidebar) RebuildTree() {
 		}
 	}
 
+	s.treeView.SetTitle(" Explorer ")
+
 	if s.filterText != "" {
-		s.treeView.SetTitle(fmt.Sprintf(" Explorer [filter: %s] ", s.filterText))
-	} else {
-		s.treeView.SetTitle(" Explorer ")
+		if totalMatches == 0 {
+			s.app.statusBar.ShowError(fmt.Sprintf("No matches found for '%s'", s.filterText))
+		} else {
+			s.app.statusBar.ShowSuccess(fmt.Sprintf("Found %d matches for '%s'", totalMatches, s.filterText))
+		}
 	}
 
 	s.root.SetExpanded(true)
