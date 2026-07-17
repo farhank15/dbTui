@@ -10,10 +10,10 @@ import (
 	"github.com/farhank15/dbTui/internal/tui"
 )
 
-const Version = "0.1.0"
+const Version = "1.2.2"
 
 func main() {
-	var showVersion, showHelp, showList, agentMode bool
+	var showVersion, showHelp, showList, agentMode, persistMode bool
 
 	for _, arg := range os.Args[1:] {
 		switch arg {
@@ -25,6 +25,8 @@ func main() {
 			showList = true
 		case "--agent":
 			agentMode = true
+		case "--persist":
+			persistMode = true
 		}
 	}
 
@@ -45,6 +47,9 @@ func main() {
 
 	if agentMode {
 		server := agent.NewServer()
+		if persistMode {
+			server.SetPersist(true)
+		}
 		if err := server.Run(); err != nil {
 			fmt.Fprintf(os.Stderr, "FATAL: %v\n", err)
 			os.Exit(1)
@@ -67,10 +72,15 @@ Usage:
   dbTui -v, --version           Show version
   dbTui -h, --help              Show this help
   dbTui --agent                 Run in agent mode (JSON-RPC over stdin/stdout)
+  dbTui --agent --persist       Run agent in persist mode (survives stdin EOF)
   dbTui --list                  List saved connections
 
 Agent mode accepts JSON-RPC 2.0 line-delimited messages on stdin.
-Methods: ping, connect, disconnect, query, list, schema, tables, explain, stats`)
+Methods: ping, connect, disconnect, query, list, schema, tables, explain, stats
+
+Use --persist when running as a detached background agent (e.g. from fennec db start).
+Without --persist the agent exits when stdin closes. With --persist it stays alive
+until SIGTERM/SIGINT.`)
 }
 
 func printConnections() {

@@ -22,6 +22,7 @@ type Server struct {
 	logger  *log.Logger
 	startAt time.Time
 	mu      sync.Mutex
+	persist bool
 }
 
 func NewServer() *Server {
@@ -33,6 +34,8 @@ func NewServer() *Server {
 		startAt: time.Now(),
 	}
 }
+
+func (s *Server) SetPersist(v bool) { s.persist = v }
 
 func (s *Server) Run() error {
 	s.log("[INFO] agent started (pid=%d)", os.Getpid())
@@ -61,6 +64,11 @@ func (s *Server) Run() error {
 
 		resp := s.handleRequest(req)
 		s.sendResponse(resp)
+	}
+
+	if s.persist {
+		s.log("[INFO] stdin EOF, entering persist mode (waiting for signal)")
+		select {}
 	}
 
 	s.log("[INFO] stdin EOF, shutting down")
