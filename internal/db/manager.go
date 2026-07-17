@@ -35,7 +35,7 @@ func (m *Manager) Connect(config model.Connection) error {
 	switch config.Type {
 	case model.TypePostgres:
 		conn = NewPostgresConnector()
-	case model.TypeMySQL:
+	case model.TypeMySQL, model.TypeMariaDB:
 		conn = NewMySQLConnector()
 	case model.TypeSQLite:
 		conn = NewSQLiteConnector()

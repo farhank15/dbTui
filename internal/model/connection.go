@@ -11,6 +11,7 @@ type ConnectionType string
 const (
 	TypePostgres ConnectionType = "postgres"
 	TypeMySQL    ConnectionType = "mysql"
+	TypeMariaDB  ConnectionType = "mariadb"
 	TypeSQLite   ConnectionType = "sqlite"
 )
 
@@ -62,8 +63,8 @@ func (c *Connection) DisplayDSN() string {
 	switch c.Type {
 	case TypePostgres:
 		return fmt.Sprintf("postgres://%s@%s:%d/%s", c.User, c.Host, c.Port, c.Database)
-	case TypeMySQL:
-		return fmt.Sprintf("mysql://%s@%s:%d/%s", c.User, c.Host, c.Port, c.Database)
+	case TypeMySQL, TypeMariaDB:
+		return fmt.Sprintf("%s://%s@%s:%d/%s", c.Type, c.User, c.Host, c.Port, c.Database)
 	case TypeSQLite:
 		return fmt.Sprintf("sqlite://%s", c.File)
 	}

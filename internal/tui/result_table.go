@@ -75,7 +75,7 @@ func NewResultTable(app *App) *ResultTable {
 			switch event.Rune() {
 			case '/':
 				if app.resultTable.detail != nil {
-					app.dialogs.ShowInputDialog("Filter Columns", "Column name...", func(text string) {
+					app.dialogs.ShowInputDialog("Filter Columns", "Column name...", app.resultTable.columnFilter, func(text string) {
 						app.resultTable.FilterColumns(text)
 					})
 					return nil
@@ -90,7 +90,7 @@ func NewResultTable(app *App) *ResultTable {
 					if err := writeToClipboard(cell.Text); err != nil {
 						app.statusBar.ShowError(fmt.Sprintf("Failed to copy cell: %v", err))
 					} else {
-						app.statusBar.ShowSuccess(fmt.Sprintf("Copied cell value to clipboard!"))
+						app.statusBar.ShowSuccess("Copied cell value to clipboard!")
 					}
 					return nil
 				}
@@ -138,7 +138,7 @@ func (rt *ResultTable) DisplayResult(result *model.QueryResult) {
 
 	// Show error
 	if result.Error != "" {
-		rt.SetTitle(fmt.Sprintf(" Results - ERROR "))
+		rt.SetTitle(" Results - ERROR ")
 
 		errorCell := tview.NewTableCell(result.Error).
 			SetTextColor(Styles.Error).
@@ -151,7 +151,7 @@ func (rt *ResultTable) DisplayResult(result *model.QueryResult) {
 	colIdxToFilter := -1
 	if rt.rowSearchColumn != "" {
 		for i, colName := range result.Columns {
-			if strings.ToLower(colName) == strings.ToLower(rt.rowSearchColumn) {
+			if strings.EqualFold(colName, rt.rowSearchColumn) {
 				colIdxToFilter = i
 				break
 			}
@@ -264,7 +264,7 @@ func (rt *ResultTable) DisplayTableDetail(detail *model.TableDetail) {
 		return
 	}
 
-	title := fmt.Sprintf(" 📋 %s (%d rows) ", detail.Table.Name, detail.Table.RowCount)
+	title := fmt.Sprintf(" %s (%d rows) ", detail.Table.Name, detail.Table.RowCount)
 	if rt.columnFilter != "" {
 		title += fmt.Sprintf("[filter: %s]", rt.columnFilter)
 	}
@@ -308,7 +308,7 @@ func (rt *ResultTable) DisplayTableDetail(detail *model.TableDetail) {
 		idxStart := len(detail.Table.Columns) + 3
 		rt.SetCell(idxStart-1, 0, tview.NewTableCell("").
 			SetSelectable(false))
-		rt.SetCell(idxStart, 0, tview.NewTableCell(fmt.Sprintf("📌 INDEXES (%d)", len(detail.Indexes))).
+		rt.SetCell(idxStart, 0, tview.NewTableCell(fmt.Sprintf("INDEXES (%d)", len(detail.Indexes))).
 			SetTextColor(Styles.Warning).
 			SetSelectable(false).
 			SetExpansion(1))
@@ -344,7 +344,7 @@ func (rt *ResultTable) DisplayTableDetail(detail *model.TableDetail) {
 		}
 
 		rt.SetCell(fkStart-1, 0, tview.NewTableCell("").SetSelectable(false))
-		rt.SetCell(fkStart, 0, tview.NewTableCell(fmt.Sprintf("🔗 FOREIGN KEYS (%d)", len(detail.ForeignKeys))).
+		rt.SetCell(fkStart, 0, tview.NewTableCell(fmt.Sprintf("FOREIGN KEYS (%d)", len(detail.ForeignKeys))).
 			SetTextColor(Styles.Warning).
 			SetSelectable(false).
 			SetExpansion(1))
@@ -450,7 +450,7 @@ func (rt *ResultTable) DeleteRow(row int) {
 				for _, pkCol := range pkCols {
 					pkColIdx := -1
 					for idx, name := range result.Columns {
-						if strings.ToLower(name) == strings.ToLower(pkCol) {
+						if strings.EqualFold(name, pkCol) {
 							pkColIdx = idx
 							break
 						}
@@ -479,7 +479,6 @@ func (rt *ResultTable) DeleteRow(row int) {
 			}
 
 			rt.app.dialogs.ShowDeleteRowConfirmDialog(result.Database, result.Table, whereClause, whereArgs, connector, func() {
-				// Refresh the table view after successful delete
 				rt.app.RefreshActiveQuery()
 				rt.app.statusBar.ShowSuccess("Row deleted successfully!")
 			})
@@ -487,7 +486,6 @@ func (rt *ResultTable) DeleteRow(row int) {
 	}()
 }
 
-// EditCell triggers inline cell editing for a specific cell in the grid
 func (rt *ResultTable) EditCell(row, col int) {
 	result := rt.result
 	if result == nil || result.Table == "" || result.ConnID == "" || result.Database == "" {
@@ -517,7 +515,6 @@ func (rt *ResultTable) EditCell(row, col int) {
 		rt.app.app.QueueUpdateDraw(func() {
 			rt.app.statusBar.ShowInfo("Ready to edit cell")
 
-			// Find primary key columns
 			var pkCols []string
 			for _, idx := range detail.Indexes {
 				if idx.Primary {
@@ -526,17 +523,15 @@ func (rt *ResultTable) EditCell(row, col int) {
 				}
 			}
 
-			// Fallback: If no primary key, check if there's an 'id' or 'ID' column
 			if len(pkCols) == 0 {
 				for _, c := range detail.Table.Columns {
-					if strings.ToLower(c.Name) == "id" {
+					if strings.EqualFold(c.Name, "id") {
 						pkCols = []string{c.Name}
 						break
 					}
 				}
 			}
 
-			// Construct WHERE clause
 			var whereClause string
 			var whereArgs []interface{}
 			
@@ -553,7 +548,7 @@ func (rt *ResultTable) EditCell(row, col int) {
 				for _, pkCol := range pkCols {
 					pkColIdx := -1
 					for idx, name := range result.Columns {
-						if strings.ToLower(name) == strings.ToLower(pkCol) {
+						if strings.EqualFold(name, pkCol) {
 							pkColIdx = idx
 							break
 						}

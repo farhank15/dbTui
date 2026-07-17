@@ -13,21 +13,15 @@ import (
 	"github.com/rivo/tview"
 )
 
-// Sidebar displays the connection tree and schema browser
 type Sidebar struct {
 	*tview.Flex
-	treeView           *tview.TreeView
-	root               *tview.TreeNode
-	app                *App
-	searchQuery        string
-	cachedTables       map[string][]model.TableInfo
-	forceFocusTree     bool
-	savedExpandedDBs   map[string]bool
-	savedExpandedConns map[string]bool
-	searchActive       bool
+	treeView     *tview.TreeView
+	root         *tview.TreeNode
+	app          *App
+	cachedTables map[string][]model.TableInfo
+	filterText   string
 }
 
-// NewSidebar creates a new sidebar with search support
 func NewSidebar(app *App) *Sidebar {
 	root := tview.NewTreeNode("Connections").
 		SetColor(Styles.Accent).
@@ -39,6 +33,7 @@ func NewSidebar(app *App) *Sidebar {
 	treeView.SetTopLevel(1)
 	treeView.SetBorder(true)
 	treeView.SetTitle(" Explorer ")
+	treeView.SetTitleColor(Styles.TextDim)
 	treeView.SetBorderColor(Styles.Border)
 
 	s := &Sidebar{
@@ -49,40 +44,82 @@ func NewSidebar(app *App) *Sidebar {
 		cachedTables: make(map[string][]model.TableInfo),
 	}
 
-	// Build layout: just the tree view
-	s.AddItem(treeView, 0, 1, true)
+	actionBar := s.buildActionBar()
 
-	// ChangedFunc fires on single click AND arrow-key navigation (auto-actions)
+	s.AddItem(treeView, 0, 1, true)
+	s.AddItem(actionBar, 1, 0, false)
+
 	s.treeView.SetChangedFunc(s.onNodeActivated)
-	// SelectedFunc fires on Enter key or double-click (explicit connect/disconnect)
 	s.treeView.SetSelectedFunc(s.onSelect)
 	s.treeView.SetInputCapture(s.onInput)
 
-	// Visual focus indicator: change border color when focused
 	s.treeView.SetFocusFunc(func() {
-		s.treeView.SetBorderColor(Styles.BorderFocus)
+		treeView.SetBorderColor(Styles.BorderFocus)
 	})
 	s.treeView.SetBlurFunc(func() {
-		s.treeView.SetBorderColor(Styles.Border)
+		treeView.SetBorderColor(Styles.Border)
 	})
-
 
 	return s
 }
 
-// RefreshConnections refreshes the connection list
+func (s *Sidebar) buildActionBar() *tview.Flex {
+	bar := tview.NewFlex().SetDirection(tview.FlexColumn)
+
+	addBtn := tview.NewButton("[ Add DB ]")
+	addBtn.SetStyle(tcell.StyleDefault.Background(Styles.Surface).Foreground(Styles.Success))
+	addBtn.SetActivatedStyle(tcell.StyleDefault.Background(Styles.Success).Foreground(Styles.Background))
+	addBtn.SetSelectedFunc(func() {
+		node := s.treeView.GetCurrentNode()
+		ref, ok := node.GetReference().(*sidebarRef)
+		connID := ""
+		if ok {
+			connID = ref.id
+		}
+		if connID == "" {
+			for _, child := range s.root.GetChildren() {
+				if ref2, ok2 := child.GetReference().(*sidebarRef); ok2 && ref2.kind == "connection" {
+					if s.app.dbManager.IsConnected(ref2.id) {
+						connID = ref2.id
+						break
+					}
+				}
+			}
+		}
+		if connID != "" {
+			s.app.dialogs.ShowCreateDBDialog(connID)
+		} else {
+			s.app.statusBar.ShowError("No connected database selected")
+		}
+	})
+
+	dropBtn := tview.NewButton("[ Drop DB ]")
+	dropBtn.SetStyle(tcell.StyleDefault.Background(Styles.Surface).Foreground(Styles.Error))
+	dropBtn.SetActivatedStyle(tcell.StyleDefault.Background(Styles.Error).Foreground(Styles.Background))
+	dropBtn.SetSelectedFunc(func() {
+		node := s.treeView.GetCurrentNode()
+		if ref, ok := node.GetReference().(*sidebarRef); ok && ref.kind == "database" {
+			s.promptDropDB(ref)
+		} else {
+			s.app.statusBar.ShowError("Select a database first")
+		}
+	})
+
+	refreshBtn := tview.NewButton("[ Refresh ]")
+	refreshBtn.SetStyle(tcell.StyleDefault.Background(Styles.Surface).Foreground(Styles.Primary))
+	refreshBtn.SetActivatedStyle(tcell.StyleDefault.Background(Styles.Primary).Foreground(Styles.Background))
+	refreshBtn.SetSelectedFunc(func() {
+		s.ForceRefresh()
+	})
+
+	bar.AddItem(addBtn, 0, 1, false)
+	bar.AddItem(dropBtn, 0, 1, false)
+	bar.AddItem(refreshBtn, 0, 1, false)
+
+	return bar
+}
+
 func (s *Sidebar) RefreshConnections() {
-	s.RebuildTree()
-}
-
-// ShowSearchExplorerDialog shows the search explorer dialog
-func (s *Sidebar) ShowSearchExplorerDialog() {
-	s.app.dialogs.ShowSearchExplorerDialog(s)
-}
-
-func (s *Sidebar) filterTables(query string) {
-	s.searchQuery = query
-	s.forceFocusTree = true
 	s.RebuildTree()
 }
 
@@ -95,7 +132,7 @@ func (s *Sidebar) createConnectionNode(conn model.Connection) *tview.TreeNode {
 }
 
 func (s *Sidebar) createDatabaseNode(connID, dbName string) *tview.TreeNode {
-	node := tview.NewTreeNode(fmt.Sprintf("[DB] %s", dbName)).
+	node := tview.NewTreeNode(dbName).
 		SetColor(Styles.Text).
 		SetReference(&sidebarRef{kind: "database", id: connID, db: dbName}).
 		SetSelectable(true).
@@ -104,14 +141,44 @@ func (s *Sidebar) createDatabaseNode(connID, dbName string) *tview.TreeNode {
 }
 
 func (s *Sidebar) createTableNode(connID, dbName, tableName string) *tview.TreeNode {
-	node := tview.NewTreeNode(fmt.Sprintf("[Tbl] %s", tableName)).
-		SetColor(Styles.TextSecondary).
+	node := tview.NewTreeNode(tableName).
+		SetColor(Styles.Text).
 		SetReference(&sidebarRef{kind: "table", id: connID, db: dbName, table: tableName}).
 		SetSelectable(true)
 	return node
 }
 
-// ExpandDatabase expands a database node and loads its tables
+func (s *Sidebar) promptDropDB(ref *sidebarRef) {
+	connConfig := s.app.config.GetConnectionByID(ref.id)
+	connName := ref.id
+	if connConfig != nil {
+		connName = connConfig.Name
+	}
+	msg := fmt.Sprintf("Drop database '%s' on connection '%s'?\nThis cannot be undone!", ref.db, connName)
+	s.app.dialogs.ShowConfirmDialog(msg, func() {
+		s.app.statusBar.ShowInfo(fmt.Sprintf("Dropping database '%s'...", ref.db))
+		go func() {
+			connector, err := s.app.dbManager.GetConnector(ref.id)
+			if err != nil {
+				s.app.app.QueueUpdateDraw(func() {
+					s.app.statusBar.ShowError(fmt.Sprintf("Failed: %v", err))
+				})
+				return
+			}
+			err = connector.DropDatabase(ref.db)
+			s.app.app.QueueUpdateDraw(func() {
+				if err != nil {
+					s.app.statusBar.ShowError(fmt.Sprintf("Failed: %v", err))
+				} else {
+					s.app.statusBar.ShowSuccess(fmt.Sprintf("Database '%s' dropped!", ref.db))
+					s.app.dbManager.RefreshDatabases(ref.id)
+					s.RefreshConnections()
+				}
+			})
+		}()
+	})
+}
+
 func (s *Sidebar) ExpandDatabase(connID, dbName string) {
 	conn, err := s.app.dbManager.GetConnector(connID)
 	if err != nil {
@@ -129,7 +196,6 @@ func (s *Sidebar) ExpandDatabase(connID, dbName string) {
 		return
 	}
 
-	// Apply tree changes on main goroutine
 	s.app.app.QueueUpdateDraw(func() {
 		s.updateDatabaseNode(connID, dbName, tables)
 	})
@@ -143,11 +209,8 @@ func (s *Sidebar) updateDatabaseNode(connID, dbName string, tables []model.Table
 	s.RebuildTree()
 }
 
-// RebuildTree builds the sidebar tree based on active search parameters
 func (s *Sidebar) RebuildTree() {
-	wasFocused := s.treeView.HasFocus()
-	// Save the selected node's reference to restore it after rebuild
-	var selectedKind, selectedID, selectedDB, selectedTable string
+	var selectedKind, selectedID, selectedDB string
 	selectedNode := s.treeView.GetCurrentNode()
 	if selectedNode != nil {
 		ref, ok := selectedNode.GetReference().(*sidebarRef)
@@ -155,21 +218,23 @@ func (s *Sidebar) RebuildTree() {
 			selectedKind = ref.kind
 			selectedID = ref.id
 			selectedDB = ref.db
-			selectedTable = ref.table
-		} else if selectedNode.GetText() == "[New Connection]" {
+		} else if selectedNode.GetText() == "+ New Connection" {
 			selectedKind = "new_connection"
 		}
 	}
 
-	// Save expanded states before rebuilding
 	expandedDBs := make(map[string]bool)
+	// expandedConns tracks explicit state: true=expanded, false=collapsed
+	// We use a separate set to know which conns have been seen in the tree before
 	expandedConns := make(map[string]bool)
+	seenConns := make(map[string]bool)
+	hadChildren := make(map[string]bool)
 	for _, connNode := range s.root.GetChildren() {
 		ref, ok := connNode.GetReference().(*sidebarRef)
 		if ok && ref.kind == "connection" {
-			if connNode.IsExpanded() {
-				expandedConns[ref.id] = true
-			}
+			seenConns[ref.id] = true
+			expandedConns[ref.id] = connNode.IsExpanded()
+			hadChildren[ref.id] = len(connNode.GetChildren()) > 0
 			for _, dbNode := range connNode.GetChildren() {
 				dbRef, ok := dbNode.GetReference().(*sidebarRef)
 				if ok && dbRef.kind == "database" {
@@ -181,36 +246,11 @@ func (s *Sidebar) RebuildTree() {
 		}
 	}
 
-	// Handle search transition state to restore correct expanded states when search is cleared
-	searchQueryLower := strings.ToLower(strings.TrimSpace(s.searchQuery))
-	if searchQueryLower != "" {
-		if !s.searchActive {
-			s.searchActive = true
-			s.savedExpandedConns = make(map[string]bool)
-			for k, v := range expandedConns {
-				s.savedExpandedConns[k] = v
-			}
-			s.savedExpandedDBs = make(map[string]bool)
-			for k, v := range expandedDBs {
-				s.savedExpandedDBs[k] = v
-			}
-		}
-	} else {
-		if s.searchActive {
-			s.searchActive = false
-			expandedConns = s.savedExpandedConns
-			expandedDBs = s.savedExpandedDBs
-			s.savedExpandedConns = nil
-			s.savedExpandedDBs = nil
-		}
-	}
-
 	s.root.ClearChildren()
 
 	var nodeToSelect *tview.TreeNode
 
-	// Add "[New Connection]" node
-	newNode := tview.NewTreeNode("[New Connection]").
+	newNode := tview.NewTreeNode("+ New Connection").
 		SetColor(Styles.Success).
 		SetSelectable(true)
 	s.root.AddChild(newNode)
@@ -218,108 +258,64 @@ func (s *Sidebar) RebuildTree() {
 		nodeToSelect = newNode
 	}
 
-	query := strings.TrimSpace(s.searchQuery)
-	queryLower := strings.ToLower(query)
-
-	var dbQuery, tableQuery string
-	hasDbQuery := false
-
-	if queryLower != "" {
-		if strings.Contains(queryLower, ".") {
-			parts := strings.SplitN(queryLower, ".", 2)
-			dbQuery = strings.TrimSpace(parts[0])
-			tableQuery = strings.TrimSpace(parts[1])
-			hasDbQuery = true
-		} else if strings.Contains(queryLower, "/") {
-			parts := strings.SplitN(queryLower, "/", 2)
-			dbQuery = strings.TrimSpace(parts[0])
-			tableQuery = strings.TrimSpace(parts[1])
-			hasDbQuery = true
-		} else if strings.Contains(queryLower, " ") {
-			parts := strings.SplitN(queryLower, " ", 2)
-			dbQuery = strings.TrimSpace(parts[0])
-			tableQuery = strings.TrimSpace(parts[1])
-			hasDbQuery = true
-		} else {
-			tableQuery = queryLower
-		}
-	}
-
 	connections := s.app.config.GetConnections()
 	for _, conn := range connections {
 		isConnected := s.app.dbManager.IsConnected(conn.ID)
 		var dbNodesToAdd []*tview.TreeNode
-		var matchedTableNode *tview.TreeNode
 
 		if isConnected {
 			state := s.app.dbManager.GetConnectionState(conn.ID)
 			if state != nil && state.Databases != nil {
 				for _, dbName := range state.Databases {
-					dbNameLower := strings.ToLower(dbName)
+					cacheKey := conn.ID + "_" + dbName
+					tables, isCached := s.cachedTables[cacheKey]
 
-					// If there is dbQuery, check if dbName matches
-					if hasDbQuery && dbQuery != "" && !strings.Contains(dbNameLower, dbQuery) {
+					// Filter databases/tables if a filter text is active
+					var matchedTables []model.TableInfo
+					dbMatches := s.filterText == "" || strings.Contains(strings.ToLower(dbName), strings.ToLower(s.filterText))
+
+					if isCached {
+						for _, table := range tables {
+							if s.filterText == "" || strings.Contains(strings.ToLower(table.Name), strings.ToLower(s.filterText)) {
+								matchedTables = append(matchedTables, table)
+							}
+						}
+					}
+
+					// If the filter is active and neither the DB name matches nor does any table match, skip it
+					if s.filterText != "" && !dbMatches && len(matchedTables) == 0 {
 						continue
 					}
 
 					dbNode := s.createDatabaseNode(conn.ID, dbName)
 
-					// Get cached tables for this database
-					cacheKey := conn.ID + "_" + dbName
-					tables, isCached := s.cachedTables[cacheKey]
-
-					// Expanded state logic:
-					// If we are filtering, auto-expand database node
 					expanded := false
-					if queryLower != "" {
-						expanded = true
-					} else if val, exists := expandedDBs[conn.ID+"_"+dbName]; exists {
+					if val, exists := expandedDBs[conn.ID+"_"+dbName]; exists {
 						expanded = val
+					}
+					// Auto-expand databases when filtering to show matching tables
+					if s.filterText != "" && len(matchedTables) > 0 {
+						expanded = true
 					}
 					dbNode.SetExpanded(expanded)
 
-					// Auto-load tables in background if filtering or database is expanded, and not cached yet
-					if !isCached && (queryLower != "" || expanded) {
+					if !isCached && expanded {
 						if s.cachedTables == nil {
 							s.cachedTables = make(map[string][]model.TableInfo)
 						}
-						s.cachedTables[cacheKey] = []model.TableInfo{} // Mark as loading
+						s.cachedTables[cacheKey] = []model.TableInfo{}
 						go s.ExpandDatabase(conn.ID, dbName)
 					}
 
-					var tableNodesToAdd []*tview.TreeNode
-					var tempMatchedTable *tview.TreeNode
 					if isCached {
-						for _, table := range tables {
-							tableNameLower := strings.ToLower(table.Name)
-							if tableQuery == "" || strings.Contains(tableNameLower, tableQuery) {
-								tableNode := s.createTableNode(conn.ID, dbName, table.Name)
-								if selectedKind == "table" && selectedID == conn.ID && selectedDB == dbName && selectedTable == table.Name {
-									tempMatchedTable = tableNode
-								}
-								tableNodesToAdd = append(tableNodesToAdd, tableNode)
-							}
+						for _, table := range matchedTables {
+							tableNode := s.createTableNode(conn.ID, dbName, table.Name)
+							dbNode.AddChild(tableNode)
 						}
-					}
-
-					// If we searched for a table, and this database has no matching tables,
-					// and we have already loaded the tables (isCached is true)
-					if tableQuery != "" && len(tableNodesToAdd) == 0 && isCached {
-						continue
-					}
-
-					// Add matching tables to database node
-					for _, tn := range tableNodesToAdd {
-						dbNode.AddChild(tn)
-					}
-
-					if tempMatchedTable != nil {
-						matchedTableNode = tempMatchedTable
 					}
 
 					dbNodesToAdd = append(dbNodesToAdd, dbNode)
 
-					// Set database selection only if database is actually added to list
 					if selectedKind == "database" && selectedID == conn.ID && selectedDB == dbName {
 						nodeToSelect = dbNode
 					}
@@ -327,46 +323,42 @@ func (s *Sidebar) RebuildTree() {
 			}
 		}
 
-		// If we are filtering, and this connection has no matching databases (and it is connected)
-		if queryLower != "" && isConnected && len(dbNodesToAdd) == 0 {
-			continue
-		}
-
 		connNode := s.createConnectionNode(conn)
 		if isConnected {
 			connNode.SetColor(Styles.Success)
-			connNode.SetText(fmt.Sprintf("[Conn] %s", conn.Name))
-			
-			// Default connection node to expanded unless explicitly closed in previous state
-			expanded := true
-			if queryLower != "" {
+			connNode.SetText(fmt.Sprintf("● %s", conn.Name))
+
+			// Default expanded=true only for brand-new connections (not yet seen in tree)
+			// or if it was previously in the tree but had no children (i.e., transitioning from disconnected to connected).
+			expanded := !seenConns[conn.ID] || !hadChildren[conn.ID]
+			if seenConns[conn.ID] && hadChildren[conn.ID] {
+				expanded = expandedConns[conn.ID]
+			}
+			// Auto-expand connection node if filtering and matching DBs/tables are inside
+			if s.filterText != "" && len(dbNodesToAdd) > 0 {
 				expanded = true
-			} else if val, exists := expandedConns[conn.ID]; exists {
-				expanded = val
 			}
 			connNode.SetExpanded(expanded)
-			
+
 			for _, dbn := range dbNodesToAdd {
 				connNode.AddChild(dbn)
 			}
 		} else {
-			// If we are filtering, do not show disconnected connections
-			if queryLower != "" {
-				continue
-			}
 			connNode.SetColor(Styles.TextSecondary)
-			connNode.SetText(fmt.Sprintf("  [Conn] %s", conn.Name))
+			connNode.SetText(fmt.Sprintf("○ %s", conn.Name))
 		}
 
 		s.root.AddChild(connNode)
 
-		// Set connection or table selection only after parent connection is added to tree
 		if selectedKind == "connection" && selectedID == conn.ID {
 			nodeToSelect = connNode
 		}
-		if matchedTableNode != nil {
-			nodeToSelect = matchedTableNode
-		}
+	}
+
+	if s.filterText != "" {
+		s.treeView.SetTitle(fmt.Sprintf(" Explorer [filter: %s] ", s.filterText))
+	} else {
+		s.treeView.SetTitle(" Explorer ")
 	}
 
 	s.root.SetExpanded(true)
@@ -381,20 +373,14 @@ func (s *Sidebar) RebuildTree() {
 		}
 	}
 
-	if wasFocused || s.forceFocusTree {
-		if !s.app.dialogOpen {
-			s.app.app.SetFocus(s.treeView)
-		}
-		s.forceFocusTree = false
+	if !s.app.dialogOpen {
+		s.app.app.SetFocus(s.treeView)
 	}
 }
 
-// onNodeActivated fires on single click OR arrow-key navigation.
-// Table → auto-show table detail structure, Connection/Database → ignored.
 func (s *Sidebar) onNodeActivated(node *tview.TreeNode) {
 	ref, ok := node.GetReference().(*sidebarRef)
 	if !ok {
-		// Root or "New Connection" — do nothing on activation
 		return
 	}
 
@@ -417,13 +403,10 @@ func (s *Sidebar) onNodeActivated(node *tview.TreeNode) {
 	}
 }
 
-// onSelect fires on Enter key or double-click.
-// Connection → connect/disconnect, New Connection → dialog.
 func (s *Sidebar) onSelect(node *tview.TreeNode) {
 	ref, ok := node.GetReference().(*sidebarRef)
 	if !ok {
-		// "New Connection" node
-		if node.GetText() == "[New Connection]" {
+		if node.GetText() == "+ New Connection" {
 			s.app.ShowConnectionDialog(nil)
 		}
 		return
@@ -438,7 +421,7 @@ func (s *Sidebar) onSelect(node *tview.TreeNode) {
 			if conn != nil {
 				s.app.ConnectTo(conn)
 			} else {
-				s.app.statusBar.ShowError("Connection not found in config — refreshing sidebar")
+				s.app.statusBar.ShowError("Connection not found in config")
 				s.RefreshConnections()
 			}
 		}
@@ -467,20 +450,22 @@ func (s *Sidebar) onInput(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	case tcell.KeyRune:
 		switch event.Rune() {
-		case '/':
-			s.ShowSearchExplorerDialog()
-			return nil
 		case '-':
 			s.CollapseAll()
 			return nil
 		case '+', '=':
 			s.ExpandAll()
 			return nil
+		case '/':
+			s.app.dialogs.ShowInputDialog("Filter Sidebar", "Filter text...", s.filterText, func(text string) {
+				s.filterText = text
+				s.RebuildTree()
+			})
+			return nil
 		case 'c', 'C':
 			s.app.ShowConnectionDialog(nil)
 			return nil
 		case 'n', 'N':
-			// New database
 			node := s.treeView.GetCurrentNode()
 			if ref, ok := node.GetReference().(*sidebarRef); ok && (ref.kind == "connection" || ref.kind == "database") {
 				s.app.dialogs.ShowCreateDBDialog(ref.id)
@@ -489,35 +474,37 @@ func (s *Sidebar) onInput(event *tcell.EventKey) *tcell.EventKey {
 		case 'r', 'R':
 			s.ForceRefresh()
 			return nil
-		case 'd', 'D':
+		case 'd':
 			node := s.GetCurrentNode()
 			if ref, ok := node.GetReference().(*sidebarRef); ok && ref.kind == "connection" {
 				s.app.Disconnect(ref.id)
 			}
 			return nil
+		case 'D':
+			node := s.GetCurrentNode()
+			if ref, ok := node.GetReference().(*sidebarRef); ok && ref.kind == "database" {
+				s.promptDropDB(ref)
+			}
+			return nil
 		case 'f', 'F':
-			// Find data in column
 			node := s.treeView.GetCurrentNode()
 			if ref, ok := node.GetReference().(*sidebarRef); ok && ref.kind == "table" {
 				s.app.dialogs.ShowSearchDataDialog(ref)
 			}
 			return nil
 		case 'a', 'A':
-			// Add column to table
 			node := s.treeView.GetCurrentNode()
 			if ref, ok := node.GetReference().(*sidebarRef); ok && ref.kind == "table" {
 				s.app.dialogs.ShowAddColumnDialog(ref.id, ref.db, ref.table)
 			}
 			return nil
 		case 'm', 'M':
-			// Modify column
 			node := s.treeView.GetCurrentNode()
 			if ref, ok := node.GetReference().(*sidebarRef); ok && ref.kind == "table" {
 				s.app.dialogs.ShowModifyColumnDialog(ref.id, ref.db, ref.table)
 			}
 			return nil
 		case 'x', 'X':
-			// Drop column
 			node := s.treeView.GetCurrentNode()
 			if ref, ok := node.GetReference().(*sidebarRef); ok && ref.kind == "table" {
 				s.app.dialogs.ShowDropColumnDialog(ref.id, ref.db, ref.table)
@@ -530,7 +517,6 @@ func (s *Sidebar) onInput(event *tcell.EventKey) *tcell.EventKey {
 			}
 			return nil
 		case 'y', 'Y':
-			// Copy database or table name to clipboard
 			node := s.GetCurrentNode()
 			if node != nil {
 				if ref, ok := node.GetReference().(*sidebarRef); ok {
@@ -543,7 +529,6 @@ func (s *Sidebar) onInput(event *tcell.EventKey) *tcell.EventKey {
 						toCopy = ref.db
 						nameType = "database"
 					}
-
 					if toCopy != "" {
 						if err := writeToClipboard(toCopy); err != nil {
 							s.app.statusBar.ShowError(fmt.Sprintf("Failed to copy: %v", err))
@@ -566,7 +551,7 @@ func (s *Sidebar) onInput(event *tcell.EventKey) *tcell.EventKey {
 					if connConfig != nil {
 						name = connConfig.Name
 					}
-					msg := fmt.Sprintf("Are you sure you want to remove connection '%s' from your saved list?", name)
+					msg := fmt.Sprintf("Remove connection '%s' from saved list?", name)
 					s.app.dialogs.ShowConfirmDialog(msg, func() {
 						if s.app.dbManager.IsConnected(ref.id) {
 							s.app.Disconnect(ref.id)
@@ -577,35 +562,7 @@ func (s *Sidebar) onInput(event *tcell.EventKey) *tcell.EventKey {
 					})
 					return nil
 				} else if ref.kind == "database" {
-					connName := ""
-					connConfig := s.app.config.GetConnectionByID(ref.id)
-					if connConfig != nil {
-						connName = connConfig.Name
-					}
-					msg := fmt.Sprintf("Are you sure you want to DROP database '%s' on connection '%s'?\nThis is a destructive action and cannot be undone!", ref.db, connName)
-					s.app.dialogs.ShowConfirmDialog(msg, func() {
-						s.app.statusBar.ShowInfo(fmt.Sprintf("Dropping database '%s'...", ref.db))
-						go func() {
-							connector, err := s.app.dbManager.GetConnector(ref.id)
-							if err != nil {
-								s.app.app.QueueUpdateDraw(func() {
-									s.app.statusBar.ShowError(fmt.Sprintf("Failed to get connector: %v", err))
-								})
-								return
-							}
-							
-							err = connector.DropDatabase(ref.db)
-							s.app.app.QueueUpdateDraw(func() {
-								if err != nil {
-									s.app.statusBar.ShowError(fmt.Sprintf("Failed to drop database: %v", err))
-								} else {
-									s.app.statusBar.ShowSuccess(fmt.Sprintf("Database '%s' dropped successfully!", ref.db))
-									_ = s.app.dbManager.RefreshDatabases(ref.id)
-									s.RefreshConnections()
-								}
-							})
-						}()
-					})
+					s.promptDropDB(ref)
 					return nil
 				}
 			}
@@ -615,7 +572,6 @@ func (s *Sidebar) onInput(event *tcell.EventKey) *tcell.EventKey {
 	return event
 }
 
-// ExpandAllDatabases auto-expands all databases for a given connection
 func (s *Sidebar) ExpandAllDatabases(connID string) {
 	for _, connChild := range s.root.GetChildren() {
 		ref, ok := connChild.GetReference().(*sidebarRef)
@@ -628,7 +584,6 @@ func (s *Sidebar) ExpandAllDatabases(connID string) {
 			if !ok || dbRef.kind != "database" {
 				continue
 			}
-			// Optimistically expand, load tables in background
 			dbChild.SetExpanded(true)
 			s.app.statusBar.ShowInfo(fmt.Sprintf("Loading tables from %s...", dbRef.db))
 			go func(id, db string) {
@@ -641,22 +596,19 @@ func (s *Sidebar) ExpandAllDatabases(connID string) {
 	}
 }
 
-// GetCurrentNode delegates to the tree view
 func (s *Sidebar) GetCurrentNode() *tview.TreeNode {
 	return s.treeView.GetCurrentNode()
 }
 
-// GetTreeView returns the underlying tree view for focus management
 func (s *Sidebar) GetTreeView() *tview.TreeView {
 	return s.treeView
 }
 
-// sidebarRef is stored in each TreeNode's reference
 type sidebarRef struct {
-	kind  string // "connection", "database", "table"
-	id    string // connection ID
-	db    string // database name
-	table string // table name
+	kind  string
+	id    string
+	db    string
+	table string
 }
 
 func (r *sidebarRef) String() string {
@@ -672,7 +624,6 @@ func (r *sidebarRef) String() string {
 	return strings.Join(parts, "/")
 }
 
-// writeToClipboard copies text to system clipboard using native commands, with OSC 52 fallback
 func writeToClipboard(text string) error {
 	var cmd *exec.Cmd
 	var useOSC52 bool
@@ -711,7 +662,7 @@ func writeToClipboard(text string) error {
 
 	if _, err := stdin.Write([]byte(text)); err != nil {
 		stdin.Close()
-		_ = cmd.Wait()
+		cmd.Wait()
 		return writeOSC52(text)
 	}
 	stdin.Close()
@@ -730,7 +681,6 @@ func writeOSC52(text string) error {
 	return err
 }
 
-// CollapseAll collapses all connection and database nodes in the tree
 func (s *Sidebar) CollapseAll() {
 	for _, connNode := range s.root.GetChildren() {
 		connNode.SetExpanded(false)
@@ -741,7 +691,6 @@ func (s *Sidebar) CollapseAll() {
 	s.app.statusBar.ShowInfo("Collapsed all explorer nodes")
 }
 
-// ExpandAll expands all connection and database nodes in the tree
 func (s *Sidebar) ExpandAll() {
 	for _, connNode := range s.root.GetChildren() {
 		connNode.SetExpanded(true)
@@ -752,15 +701,11 @@ func (s *Sidebar) ExpandAll() {
 	s.app.statusBar.ShowInfo("Expanded all explorer nodes")
 }
 
-// ForceRefresh reloads all databases and tables from the database servers
-// and rebuilds the explorer tree.
 func (s *Sidebar) ForceRefresh() {
 	s.app.statusBar.ShowInfo("Refreshing databases and tables...")
 
-	// Clear the cached tables so they are re-queried from the DB
 	s.cachedTables = make(map[string][]model.TableInfo)
 
-	// Fetch active connections and refresh their databases
 	activeConns := s.app.dbManager.GetActiveConnections()
 	if len(activeConns) == 0 {
 		s.RebuildTree()
@@ -771,14 +716,12 @@ func (s *Sidebar) ForceRefresh() {
 	go func() {
 		for _, connState := range activeConns {
 			if connState.Connected {
-				_ = s.app.dbManager.RefreshDatabases(connState.Connection.ID)
+				s.app.dbManager.RefreshDatabases(connState.Connection.ID)
 			}
 		}
 		s.app.app.QueueUpdateDraw(func() {
 			s.RebuildTree()
 
-			// Auto-load tables for all databases in the background
-			// so the user doesn't see an empty tree after refresh
 			for _, connState := range activeConns {
 				if !connState.Connected {
 					continue
@@ -788,7 +731,7 @@ func (s *Sidebar) ForceRefresh() {
 					for _, dbName := range curState.Databases {
 						cacheKey := connState.Connection.ID + "_" + dbName
 						if _, isCached := s.cachedTables[cacheKey]; !isCached {
-							s.cachedTables[cacheKey] = []model.TableInfo{} // Mark as loading
+							s.cachedTables[cacheKey] = []model.TableInfo{}
 							go s.ExpandDatabase(connState.Connection.ID, dbName)
 						}
 					}
@@ -799,3 +742,5 @@ func (s *Sidebar) ForceRefresh() {
 		})
 	}()
 }
+
+

@@ -16,7 +16,13 @@ import (
 )
 
 func debugLog(msg string) {
-	f, err := os.OpenFile("/home/mawa/My_File/Development/dev_ink/dbTui/debug.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	logDir := filepath.Join(homeDir, ".dbTui")
+	os.MkdirAll(logDir, 0755)
+	f, err := os.OpenFile(filepath.Join(logDir, "debug.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err == nil {
 		defer f.Close()
 		f.WriteString(time.Now().Format("15:04:05 ") + msg + "\n")
@@ -441,6 +447,85 @@ func (a *App) FocusResultTable() {
 	a.app.SetFocus(a.resultTable)
 }
 
+// wrapModal wraps any primitive in a centered modal layout.
+// width/height: fixed size in cells; use 0 for proportional (fills ~60% of screen).
+func wrapModal(content tview.Primitive, width, height int) *tview.Flex {
+	var hSize, hProp, vSize, vProp int
+	if width > 0 {
+		hSize, hProp = width, 0
+	} else {
+		hSize, hProp = 0, 3 // ~60% of screen (3 out of 5 proportion)
+	}
+	if height > 0 {
+		vSize, vProp = height, 0
+	} else {
+		vSize, vProp = 0, 3 // ~60% of screen
+	}
+
+	// Style standard components for a consistent, premium dark theme look
+	switch c := content.(type) {
+	case *tview.Form:
+		c.SetBackgroundColor(Styles.Surface)
+		c.SetLabelColor(Styles.Secondary)
+		c.SetFieldTextColor(Styles.Text)
+		c.SetFieldBackgroundColor(Styles.InputBg)
+		c.SetButtonStyle(tcell.StyleDefault.Background(Styles.SurfaceAlt).Foreground(Styles.Text))
+		c.SetButtonActivatedStyle(tcell.StyleDefault.Background(Styles.Primary).Foreground(Styles.Background))
+		c.SetBorderColor(Styles.BorderFocus)
+		c.SetTitleColor(Styles.Accent)
+	case *tview.List:
+		c.SetBackgroundColor(Styles.Surface)
+		c.SetMainTextColor(Styles.Text)
+		c.SetSecondaryTextColor(Styles.TextDim)
+		c.SetShortcutColor(Styles.Accent)
+		c.SetSelectedTextColor(Styles.Background)
+		c.SetSelectedBackgroundColor(Styles.Primary)
+		c.SetBorderColor(Styles.BorderFocus)
+		c.SetTitleColor(Styles.Accent)
+	case *tview.TextView:
+		c.SetBackgroundColor(Styles.Surface)
+		c.SetTextColor(Styles.Text)
+		c.SetBorderColor(Styles.BorderFocus)
+		c.SetTitleColor(Styles.Accent)
+	case *tview.Table:
+		c.SetBackgroundColor(Styles.Surface)
+		c.SetBorderColor(Styles.BorderFocus)
+		c.SetTitleColor(Styles.Accent)
+	case *tview.Flex:
+		c.SetBackgroundColor(Styles.Surface)
+		c.SetBorderColor(Styles.BorderFocus)
+		c.SetTitleColor(Styles.Accent)
+		// Recursively style child elements inside Flex
+		for i := 0; i < c.GetItemCount(); i++ {
+			item := c.GetItem(i)
+			if f, ok := item.(*tview.Form); ok {
+				f.SetBackgroundColor(Styles.Surface)
+				f.SetLabelColor(Styles.Secondary)
+				f.SetFieldTextColor(Styles.Text)
+				f.SetFieldBackgroundColor(Styles.InputBg)
+				f.SetButtonStyle(tcell.StyleDefault.Background(Styles.SurfaceAlt).Foreground(Styles.Text))
+				f.SetButtonActivatedStyle(tcell.StyleDefault.Background(Styles.Primary).Foreground(Styles.Background))
+				f.SetBorderColor(Styles.BorderFocus)
+				f.SetTitleColor(Styles.Accent)
+			} else if tv, ok := item.(*tview.TextView); ok {
+				tv.SetBackgroundColor(Styles.Surface)
+				tv.SetTextColor(Styles.Text)
+				tv.SetBorderColor(Styles.BorderFocus)
+				tv.SetTitleColor(Styles.Accent)
+			}
+		}
+	}
+
+	return tview.NewFlex().
+		AddItem(nil, 0, 1, false).
+		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
+			AddItem(nil, 0, 1, false).
+			AddItem(content, vSize, vProp, true).
+			AddItem(nil, 0, 1, false),
+			hSize, hProp, true).
+		AddItem(nil, 0, 1, false)
+}
+
 // isFocusable returns whether the primitive is safe to focus (not nil and not hidden)
 func (a *App) isFocusable(p tview.Primitive) bool {
 	if p == nil {
@@ -459,7 +544,8 @@ func (a *App) isFocusable(p tview.Primitive) bool {
 	return true
 }
 
-// ShowDialog shows a modal dialog
+// showDialog shows a modal dialog page on top of the main layout.
+// primitive should be a wrapModal result; focus is set to its inner content automatically.
 func (a *App) showDialog(primitive tview.Primitive) {
 	// Remember the currently focused primitive before showing the dialog
 	if !a.dialogOpen {
@@ -472,49 +558,55 @@ func (a *App) showDialog(primitive tview.Primitive) {
 		}
 	}
 
-	flex := tview.NewFlex().
-		AddItem(nil, 0, 1, false).
-		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
-			AddItem(nil, 0, 1, false).
-			AddItem(primitive, 0, 3, true).
-			AddItem(nil, 0, 1, false),
-			0, 2, true).
-		AddItem(nil, 0, 1, false)
+	// primitive is already a centered Flex from wrapModal; add ESC capture on it
+	if flex, ok := primitive.(*tview.Flex); ok {
+		flex.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+			if event.Key() == tcell.KeyEscape {
+				a.closeDialog()
+				return nil
+			}
+			return event
+		})
+	}
 
-	flex.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Key() == tcell.KeyEscape {
-			a.closeDialog()
-			return nil
-		}
-		return event
-	})
+	// Style modal explicitly if that's what's passed
+	if modal, ok := primitive.(*tview.Modal); ok {
+		modal.SetBackgroundColor(Styles.Surface)
+		modal.SetTextColor(Styles.Text)
+		modal.SetButtonStyle(tcell.StyleDefault.Background(Styles.SurfaceAlt).Foreground(Styles.Text))
+		modal.SetButtonActivatedStyle(tcell.StyleDefault.Background(Styles.Primary).Foreground(Styles.Background))
+	}
 
 	a.dialogOpen = true
-	a.pages.AddPage("dialog", flex, true, true)
-	a.app.SetFocus(primitive)
+	a.pages.AddPage("dialog", primitive, true, true)
+	// Set focus to the inner content, not the outer centering Flex.
+	// wrapModal structure: outerFlex > innerFlex (item[1]) > content (item[1])
+	focusTarget := primitive
+	if outerFlex, ok := primitive.(*tview.Flex); ok {
+		if outerFlex.GetItemCount() >= 2 {
+			if innerFlex, ok := outerFlex.GetItem(1).(*tview.Flex); ok {
+				if innerFlex.GetItemCount() >= 2 {
+					focusTarget = innerFlex.GetItem(1)
+				}
+			}
+		}
+	}
+	a.app.SetFocus(focusTarget)
 }
 
 // closeDialog closes the current dialog
 func (a *App) closeDialog() {
 	target := a.getFocusTarget()
-	wasSaved := a.focusBeforeDialog != nil
-	debugLog(fmt.Sprintf("closeDialog: focusBeforeDialog exists = %v (%T), isFocusable = %v", wasSaved, a.focusBeforeDialog, a.isFocusable(a.focusBeforeDialog)))
 	if a.isFocusable(a.focusBeforeDialog) {
 		target = a.focusBeforeDialog
 	}
 	a.focusBeforeDialog = nil
 
-	debugLog(fmt.Sprintf("closeDialog: target resolved to = %T", target))
-	go func() {
-		a.app.QueueUpdateDraw(func() {
-			debugLog("closeDialog QueueUpdateDraw: removing dialog page")
-			a.pages.RemovePage("dialog")
-			a.dialogOpen = false
-			debugLog(fmt.Sprintf("closeDialog QueueUpdateDraw: calling SetFocus on %T", target))
-			a.app.SetFocus(target)
-			debugLog(fmt.Sprintf("closeDialog QueueUpdateDraw: current focus after SetFocus = %T", a.app.GetFocus()))
-		})
-	}()
+	a.pages.RemovePage("dialog")
+	a.dialogOpen = false
+	if target != nil {
+		a.app.SetFocus(target)
+	}
 }
 
 // getFocusTarget returns the appropriate visible focus target (sidebar or query panel fallback)
