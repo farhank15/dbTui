@@ -8,9 +8,10 @@ import (
 	"github.com/farhank15/dbTui/internal/agent"
 	"github.com/farhank15/dbTui/internal/config"
 	"github.com/farhank15/dbTui/internal/tui"
+	"github.com/farhank15/dbTui/internal/version"
 )
 
-const Version = "1.2.2"
+var Version = version.Version
 
 func main() {
 	var showVersion, showHelp, showList, agentMode, persistMode bool
