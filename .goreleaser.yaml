@@ -21,14 +21,15 @@ builds:
 
 archives:
   - format: tar.gz
-    # use zip for windows archives
     format_overrides:
       - goos: windows
         format: zip
     name_template: >-
       {{ .ProjectName }}_
-      {{- .Os }}_
-      {{- if eq .Arch "amd64" }}x86_64
+      {{- if eq .Os "linux" }}Linux
+      {{- else if eq .Os "darwin" }}Darwin
+      {{- else }}{{ .Os }}{{ end }}_
+      {{- if eq .Arch "amd64" }}amd64
       {{- else }}{{ .Arch }}{{ end }}
 
 checksum:
